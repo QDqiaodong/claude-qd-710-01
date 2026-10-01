@@ -72,6 +72,16 @@ export const jobOrderApi = {
   cancel: (id, reason) => http.post(`/job-orders/${id}/cancel`, reason ? { reason } : {})
 }
 
+/** 模块五-延：异常架次停飞处置 */
+export const handlingApi = {
+  list: (params) => http.get('/abnormal-handlings', { params }),
+  detail: (id) => http.get(`/abnormal-handlings/${id}`),
+  supervisorOptions: () => http.get('/abnormal-handlings/supervisor-options'),
+  observe: (id, supervisorId, comment) => http.post(`/abnormal-handlings/${id}/observe`, { supervisorId, comment }),
+  ground: (id, supervisorId, comment) => http.post(`/abnormal-handlings/${id}/ground`, { supervisorId, comment }),
+  release: (id, supervisorId, conclusion) => http.post(`/abnormal-handlings/${id}/release`, { supervisorId, comment: conclusion })
+}
+
 /** 模块六：作业前配药复核台 */
 export const mixingApi = {
   list: (status) => http.get('/mixing-batches', { params: status ? { status } : {} }),
@@ -88,8 +98,8 @@ export const mixingApi = {
 
 /** 模块五：飞行日志 */
 export const flightLogApi = {
-  list: (jobOrderId) => http.get('/flight-logs', { params: jobOrderId ? { jobOrderId } : {} }),
-  abnormal: (jobOrderId) => http.get('/flight-logs/abnormal', { params: jobOrderId ? { jobOrderId } : {} }),
+  list: (params) => http.get('/flight-logs', { params: params || {} }),
+  abnormal: (params) => http.get('/flight-logs/abnormal', { params: params || {} }),
   summary: (jobOrderId) => http.get('/flight-logs/summary', { params: jobOrderId ? { jobOrderId } : {} }),
   create: (data) => http.post('/flight-logs', data)
 }

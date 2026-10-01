@@ -65,8 +65,10 @@ public final class Views {
             String statusName,
             LocalDate purchaseDate,
             long openOrders,
+            long pendingOrders,
             String currentPlotNo,
             long sortCount,
+            long openHandlingCount,
             LocalDateTime updatedAt) {
     }
 
@@ -98,6 +100,9 @@ public final class Views {
             Long droneId,
             String droneBodyNo,
             String droneModel,
+            String droneStatus,
+            String droneStatusName,
+            boolean droneOpenHandling,
             Long pilotId,
             String pilotName,
             String formula,
@@ -124,6 +129,7 @@ public final class Views {
             Long jobOrderId,
             String orderNo,
             String plotNo,
+            Long droneId,
             String droneBodyNo,
             String pilotName,
             Integer seqNo,
@@ -135,7 +141,10 @@ public final class Views {
             BigDecimal windSpeed,
             BigDecimal temperature,
             boolean abnormal,
-            String abnormalDesc) {
+            String abnormalDesc,
+            Long handlingId,
+            String handlingStatus,
+            String handlingStatusName) {
     }
 
     /** 作业地图一块多边形：几何 + 着色 + 是否叠加喷洒航线 */
@@ -171,7 +180,7 @@ public final class Views {
 
     /** 派工下拉框：无人机瘦身形状（机身编号 + 型号 + 状态 + 最大载荷） */
     public record DroneOptionView(Long id, String bodyNo, String model, String status, String statusName,
-                                  BigDecimal maxPayload) {
+                                  BigDecimal maxPayload, boolean openHandling) {
     }
 
     /** 派工下拉框：飞手瘦身形状（编号 + 姓名 + 执照等级） */
@@ -186,6 +195,65 @@ public final class Views {
     /** 飞行日志汇总条：总架次 / 总时长 / 总药量 / 异常架次 */
     public record LogSummary(long rows, long totalMinutes, BigDecimal totalAreaMu, BigDecimal chemicalTotal,
                              long abnormalRows) {
+    }
+
+    // ---------------- 模块五-延：异常架次停飞处置 ----------------
+
+    /** 异常处置列表行 / 详情（详情多带架次快照、待飞单与留痕时间线，行视图这两项为空集合） */
+    public record HandlingView(
+            Long id,
+            String handlingNo,
+            String status,
+            String statusName,
+            Long flightLogId,
+            Long jobOrderId,
+            String orderNo,
+            String plotNo,
+            String pilotName,
+            Integer seqNo,
+            LocalDateTime takeoffAt,
+            String abnormalDesc,
+            Long droneId,
+            String droneBodyNo,
+            String droneModel,
+            String droneStatus,
+            String droneStatusName,
+            Long registerPilotId,
+            String registerName,
+            Long supervisorId,
+            String supervisorName,
+            String observeComment,
+            String groundComment,
+            String conclusion,
+            LocalDateTime registeredAt,
+            LocalDateTime observedAt,
+            LocalDateTime groundedAt,
+            LocalDateTime closedAt,
+            LocalDateTime updatedAt,
+            /** 停飞时尚未起飞（待飞）的作业单：必须改派，不能再选用该机身 */
+            List<HandlingPendingOrder> pendingOrders,
+            /** 该机身其他仍未结束的处置（解除时用） */
+            long otherOpenCount,
+            List<HandlingActionView> actions) {
+    }
+
+    /** 处置单挂着的待飞作业单（改派提示用） */
+    public record HandlingPendingOrder(Long id, String orderNo, String plotNo, LocalDate jobDate) {
+    }
+
+    /** 处置留痕时间线一条 */
+    public record HandlingActionView(
+            Long id,
+            String action,
+            String actionName,
+            Long actorPilotId,
+            String actorName,
+            String comment,
+            LocalDateTime createdAt) {
+    }
+
+    /** 值班主管下拉框：在队且三级（高级）/ 教员，与配药复核人同一门槛 */
+    public record SupervisorOptionView(Long id, String pilotNo, String name, String licenseName) {
     }
 
     // ---------------- 模块六：作业前配药复核台 ----------------
@@ -277,6 +345,10 @@ public final class Views {
             long logRows,
             long abnormalRows,
             long totalMinutes,
-            BigDecimal chemicalTotal) {
+            BigDecimal chemicalTotal,
+            long handlingPending,
+            long handlingObserving,
+            long handlingGrounded,
+            long handlingOpen) {
     }
 }

@@ -32,8 +32,13 @@
         <div class="stat-chip"><b>{{ overview.pilotActive || 0 }}</b><span>在队飞手</span></div>
         <div class="stat-chip"><b>{{ overview.orderDone || 0 }}</b><span>已完成单</span></div>
         <div class="stat-chip"><b>{{ hoursText }}</b><span>累计飞行小时</span></div>
-        <div class="stat-chip" :class="{ 'is-alert': (overview.abnormalRows || 0) > 0 }">
+        <div class="stat-chip clickable" :class="{ 'is-alert': (overview.abnormalRows || 0) > 0 }"
+             title="点击进入异常停飞处置台" @click="goHandlings()">
           <b>{{ overview.abnormalRows || 0 }}</b><span>异常架次</span>
+        </div>
+        <div v-if="overview.handlingOpen" class="stat-chip clickable is-alert"
+             title="有待处置 / 观察 / 停飞中的异常处置，点击处理" @click="goHandlings()">
+          <b>{{ overview.handlingOpen }}</b><span>未结束处置</span>
         </div>
       </div>
     </header>
@@ -107,6 +112,10 @@ function go(path) {
   nav.push(path)
 }
 
+function goHandlings() {
+  nav.push({ path: '/handlings' })
+}
+
 function onRangeChange(value) {
   const saved = value || ['', '']
   localStorage.setItem('plant-range', JSON.stringify(saved))
@@ -134,5 +143,11 @@ onMounted(async () => {
   min-height: 100%;
   display: flex;
   flex-direction: column;
+}
+.stat-chip.clickable {
+  cursor: pointer;
+}
+.stat-chip.clickable:hover {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45);
 }
 </style>

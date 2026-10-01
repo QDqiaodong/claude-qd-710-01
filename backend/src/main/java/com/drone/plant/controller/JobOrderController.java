@@ -39,11 +39,12 @@ public class JobOrderController {
     public ApiResponse<List<Views.JobOrderView>> list(
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "plotId", required = false) Long plotId,
+            @RequestParam(value = "droneId", required = false) Long droneId,
             @RequestParam(value = "from", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(value = "to", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
-        return ApiResponse.success(jobOrderService.list(status, plotId, from, to));
+        return ApiResponse.success(jobOrderService.list(status, plotId, droneId, from, to));
     }
 
     /** 下拉框：同一查询方法取 JobOrderOption 形状 */

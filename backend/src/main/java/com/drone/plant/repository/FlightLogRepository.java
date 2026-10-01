@@ -17,6 +17,11 @@ public interface FlightLogRepository extends JpaRepository<FlightLog, Long> {
 
     <T> List<T> findByJobOrderIdAndAbnormalTrueOrderBySeqNoAsc(Long jobOrderId, Class<T> type);
 
+    /** 按无人机筛：作业单 → 机身的映射在 service 里先算出来，这里用 IN 一次取回 */
+    <T> List<T> findByJobOrderIdInOrderByTakeoffAtDesc(List<Long> jobOrderIds, Class<T> type);
+
+    <T> List<T> findByJobOrderIdInAndAbnormalTrueOrderByTakeoffAtDesc(List<Long> jobOrderIds, Class<T> type);
+
     long countByJobOrderId(Long jobOrderId);
 
     long countByJobOrderIdAndAbnormalTrue(Long jobOrderId);

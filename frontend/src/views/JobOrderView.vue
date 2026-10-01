@@ -13,6 +13,12 @@
         </div>
       </div>
 
+      <div v-if="focusId" class="scope-bar">
+        <el-tag type="danger" size="small" closable @close="clearFocus">
+          正在定位待改派作业单 #{{ focusId }}：机身已不可用，请点「改派/改口径」换一台在库机身
+        </el-tag>
+      </div>
+
       <div class="summary-bar" style="margin-bottom: 12px">
         <div class="sb-item"><span>作业单总数</span><b>{{ orders.length }}</b></div>
         <div class="sb-item"><span>待飞</span><b>{{ count('PENDING') }}</b></div>
@@ -23,12 +29,24 @@
         <div class="sb-item"><span>累计用药(L)</span><b>{{ chemicalTotal.toFixed(1) }}</b></div>
       </div>
 
-      <el-table :data="orders" border size="small" :row-class-name="rowClass">
+      <el-table :data="orders" border size="small" :row-class-name="rowClass" :row-key="(row) => row.id"
+                :row-style="rowStyle">
         <el-table-column prop="orderNo" label="单号" width="132" />
         <el-table-column label="地块 / 承包户" min-width="180">
           <template #default="{ row }">{{ row.plotNo }} · {{ row.farmerName }}</template>
         </el-table-column>
-        <el-table-column prop="droneBodyNo" label="机身" width="96" />
+        <el-table-column prop="droneBodyNo" label="机身" width="120">
+          <template #default="{ row }">
+            <div>{{ row.droneBodyNo }}</div>
+            <el-tag v-if="row.status === 'PENDING' && row.droneStatus !== 'IDLE'" size="small" type="danger"
+                    effect="plain">
+              {{ row.droneStatusName }}·须改派
+            </el-tag>
+            <el-tag v-else-if="row.droneOpenHandling" size="small" type="warning" effect="plain">
+              有异常处置
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="pilotName" label="飞手" width="90" />
         <el-table-column prop="formula" label="药剂配方" min-width="200" show-overflow-tooltip />
         <el-table-column prop="dosePerMu" label="亩用量" width="90" />
@@ -66,7 +84,12 @@
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'PENDING'" size="small" type="primary" @click="takeoff(row)">起飞</el-button>
+            <el-button v-if="row.status === 'PENDING' && row.droneStatus === 'IDLE'" size="small" type="primary"
+                       @click="takeoff(row)">起飞</el-button>
+            <el-tooltip v-if="row.status === 'PENDING' && row.droneStatus !== 'IDLE'" placement="top"
+                        :content="'机身' + row.droneStatusName + '中，不能起飞，请先改派在库机身'">
+              <el-button size="small" type="primary" disabled>起飞</el-button>
+            </el-tooltip>
             <el-button v-if="row.status === 'WORKING'" size="small" type="success" @click="finish(row)">完成</el-button>
             <el-button v-if="row.status === 'PENDING'" size="small" @click="openEdit(row)">改派/改口径</el-button>
             <el-button v-if="row.status === 'PENDING' || row.status === 'WORKING'" size="small" type="danger" @click="cancel(row)">取消</el-button>
@@ -85,8 +108,10 @@
           </el-select>
         </el-form-item>
         <el-form-item label="无人机">
-          <el-select v-model="form.droneId" filterable placeholder="选择机身" style="width: 100%">
-            <el-option v-for="d in droneOptions" :key="d.id" :label="d.bodyNo + ' · ' + d.model" :value="d.id" />
+          <el-select v-model="form.droneId" filterable placeholder="只有在库且无未结束处置的机身可派航" style="width: 100%">
+            <el-option v-for="d in droneOptions" :key="d.id"
+                       :disabled="d.status !== 'IDLE' || d.openHandling"
+                       :label="d.bodyNo + ' · ' + d.model + droneOptionSuffix(d)" :value="d.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="飞手">
@@ -123,7 +148,11 @@
         </el-form-item>
         <el-form-item label="改派无人机">
           <el-select v-model="editForm.droneId" filterable style="width: 100%">
-            <el-option v-for="d in droneOptions" :key="d.id" :label="d.bodyNo + ' · ' + d.model + ' · 载荷' + d.maxPayload + 'L'" :value="d.id" />
+            <el-option v-for="d in droneOptions" :key="d.id"
+                       :disabled="d.status !== 'IDLE' || d.openHandling"
+                       :label="d.bodyNo + ' · ' + d.model + ' · 载荷' + d.maxPayload + 'L'
+                         + droneOptionSuffix(d)"
+                       :value="d.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="飞手">
@@ -149,10 +178,11 @@
 
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { droneApi, jobOrderApi, pilotApi, plotApi } from '../api'
 
+const route = useRoute()
 const router = useRouter()
 const plant = inject('plant')
 const orders = ref([])
@@ -164,6 +194,7 @@ const pilotOptions = ref([])
 const editVisible = ref(false)
 const editTarget = ref(null)
 const editForm = ref({})
+const focusId = ref(null)
 
 const statuses = [
   { value: 'PENDING', label: '待飞' },
@@ -192,8 +223,24 @@ function statusColor(status) {
   return '#6b5f7d'
 }
 
+function droneOptionSuffix(d) {
+  if (d.openHandling) return '（异常处置中，不可选）'
+  return d.status === 'IDLE' ? '' : '（' + d.statusName + '）'
+}
+
 function rowClass({ row }) {
   return row.status === 'CANCELED' ? 'row-hold' : ''
+}
+
+function rowStyle({ row }) {
+  return focusId.value && focusId.value === row.id
+    ? { background: '#fff3e0', fontWeight: 700 }
+    : {}
+}
+
+function clearFocus() {
+  focusId.value = null
+  router.replace({ path: '/orders' })
 }
 
 async function load() {
@@ -292,5 +339,14 @@ onMounted(async () => {
   plotOptions.value = await plotApi.options()
   droneOptions.value = await droneApi.options()
   pilotOptions.value = await pilotApi.options()
+  if (route.query.focus) {
+    const id = Number(route.query.focus)
+    focusId.value = id
+    const target = orders.value.find((o) => o.id === id)
+    if (target && target.status === 'PENDING') {
+      ElMessage.warning('该作业单绑定的机身已停飞维护，请改派一台在库机身')
+      openEdit(target)
+    }
+  }
 })
 </script>

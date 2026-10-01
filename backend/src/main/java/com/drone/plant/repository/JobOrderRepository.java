@@ -24,6 +24,8 @@ public interface JobOrderRepository extends JpaRepository<JobOrder, Long> {
 
     <T> List<T> findByDroneIdOrderByJobDateDesc(Long droneId, Class<T> type);
 
+    long countByDroneIdAndStatus(Long droneId, String status);
+
     boolean existsByOrderNo(String orderNo);
 
     long countByStatus(String status);

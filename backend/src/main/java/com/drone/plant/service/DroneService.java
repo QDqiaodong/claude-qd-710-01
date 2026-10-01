@@ -21,6 +21,7 @@ import com.drone.plant.projection.DronePayload;
 import com.drone.plant.projection.FlightLogStat;
 import com.drone.plant.projection.JobOrderBrief;
 import com.drone.plant.projection.PlotOption;
+import com.drone.plant.repository.AbnormalHandlingRepository;
 import com.drone.plant.repository.DroneRepository;
 import com.drone.plant.repository.FlightLogRepository;
 import com.drone.plant.repository.JobOrderRepository;
@@ -40,13 +41,16 @@ public class DroneService {
     private final JobOrderRepository jobOrderRepository;
     private final FlightLogRepository flightLogRepository;
     private final PlotRepository plotRepository;
+    private final AbnormalHandlingRepository handlingRepository;
 
     public DroneService(DroneRepository droneRepository, JobOrderRepository jobOrderRepository,
-                        FlightLogRepository flightLogRepository, PlotRepository plotRepository) {
+                        FlightLogRepository flightLogRepository, PlotRepository plotRepository,
+                        AbnormalHandlingRepository handlingRepository) {
         this.droneRepository = droneRepository;
         this.jobOrderRepository = jobOrderRepository;
         this.flightLogRepository = flightLogRepository;
         this.plotRepository = plotRepository;
+        this.handlingRepository = handlingRepository;
     }
 
     @Transactional(readOnly = true)
@@ -60,6 +64,7 @@ public class DroneService {
             rows = droneRepository.findByStatusOrderByBodyNoAsc(status, DroneCard.class);
         }
         Map<Long, DroneStat> stats = droneStats();
+        Map<Long, Long> openHandling = openHandlingMap();
         List<Views.DroneView> list = new ArrayList<>();
         for (DroneCard row : rows) {
             DroneStat stat = stats.get(row.getId());
@@ -67,8 +72,10 @@ public class DroneService {
                     PlantRules.droneTypeName(row.getDroneType()), row.getMaxPayload(), row.getSprayWidth(),
                     row.getTotalFlightHours(), row.getTotalAreaMu(), row.getBatteryPacks(), row.getStatus(),
                     PlantRules.droneStatusName(row.getStatus()), row.getPurchaseDate(),
-                    stat == null ? 0 : stat.openOrders, stat == null ? null : stat.currentPlotNo,
-                    stat == null ? 0 : stat.sortCount, null));
+                    stat == null ? 0 : stat.openOrders, stat == null ? 0 : stat.pendingOrders,
+                    stat == null ? null : stat.currentPlotNo,
+                    stat == null ? 0 : stat.sortCount,
+                    openHandling.getOrDefault(row.getId(), 0L), null));
         }
         return list;
     }
@@ -76,10 +83,12 @@ public class DroneService {
     /** 下拉框：同一方法取 {@link DroneOption} 形状 */
     @Transactional(readOnly = true)
     public List<Views.DroneOptionView> options() {
+        Map<Long, Long> openHandling = openHandlingMap();
         List<Views.DroneOptionView> list = new ArrayList<>();
         for (DroneOption row : droneRepository.findAllByOrderByBodyNoAsc(DroneOption.class)) {
             list.add(new Views.DroneOptionView(row.getId(), row.getBodyNo(), row.getModel(), row.getStatus(),
-                    PlantRules.droneStatusName(row.getStatus()), row.getMaxPayload()));
+                    PlantRules.droneStatusName(row.getStatus()), row.getMaxPayload(),
+                    openHandling.containsKey(row.getId())));
         }
         return list;
     }
@@ -140,7 +149,7 @@ public class DroneService {
         return new Views.DroneView(saved.getId(), saved.getBodyNo(), saved.getModel(), saved.getDroneType(),
                 PlantRules.droneTypeName(saved.getDroneType()), saved.getMaxPayload(), saved.getSprayWidth(),
                 saved.getTotalFlightHours(), saved.getTotalAreaMu(), saved.getBatteryPacks(), saved.getStatus(),
-                PlantRules.droneStatusName(saved.getStatus()), saved.getPurchaseDate(), 0, null, 0,
+                PlantRules.droneStatusName(saved.getStatus()), saved.getPurchaseDate(), 0, 0, null, 0, 0,
                 saved.getUpdatedAt());
     }
 
@@ -156,6 +165,11 @@ public class DroneService {
         if ("WORKING".equals(target)) {
             throw new BizException("作业中由作业单起飞自动推进，请在作业单页操作");
         }
+        // 仍有未结束异常处置（待处置 / 继续观察 / 停飞中）时不能手工切回在库，必须先走解除闭环
+        if ("IDLE".equals(target) && handlingRepository.existsByDroneIdAndStatusIn(id,
+                PlantRules.HANDLING_OPEN_STATUSES)) {
+            throw new BizException(drone.getBodyNo() + " 仍有未结束的异常处置，请在异常处置台解除闭环后再切回在库");
+        }
         if ("MAINT".equals(target) || "DISABLED".equals(target)) {
             if (hasWorkingOrder(id)) {
                 throw new BizException(drone.getBodyNo() + " 还有作业中的作业单，不能转入 "
@@ -166,12 +180,15 @@ public class DroneService {
         drone.setUpdatedAt(LocalDateTime.now());
         Drone saved = droneRepository.save(drone);
         DroneStat stat = droneStats().get(id);
+        long openHandling = handlingRepository.countByDroneIdAndStatusIn(id,
+                PlantRules.HANDLING_OPEN_STATUSES);
         return new Views.DroneView(saved.getId(), saved.getBodyNo(), saved.getModel(), saved.getDroneType(),
                 PlantRules.droneTypeName(saved.getDroneType()), saved.getMaxPayload(), saved.getSprayWidth(),
                 saved.getTotalFlightHours(), saved.getTotalAreaMu(), saved.getBatteryPacks(), saved.getStatus(),
                 PlantRules.droneStatusName(saved.getStatus()), saved.getPurchaseDate(),
-                stat == null ? 0 : stat.openOrders, stat == null ? null : stat.currentPlotNo,
-                stat == null ? 0 : stat.sortCount, saved.getUpdatedAt());
+                stat == null ? 0 : stat.openOrders, stat == null ? 0 : stat.pendingOrders,
+                stat == null ? null : stat.currentPlotNo,
+                stat == null ? 0 : stat.sortCount, openHandling, saved.getUpdatedAt());
     }
 
     private boolean hasWorkingOrder(Long droneId) {
@@ -201,22 +218,38 @@ public class DroneService {
             if (droneId == null) {
                 continue;
             }
-            DroneStat old = map.getOrDefault(droneId, new DroneStat(0, null, 0));
-            map.put(droneId, new DroneStat(old.openOrders, old.currentPlotNo, old.sortCount + 1));
+            DroneStat old = map.getOrDefault(droneId, new DroneStat(0, 0, null, 0));
+            map.put(droneId, new DroneStat(old.openOrders, old.pendingOrders, old.currentPlotNo, old.sortCount + 1));
         }
         for (Map.Entry<Long, List<JobOrderBrief>> entry : byDrone.entrySet()) {
             long open = 0;
+            long pending = 0;
             String plotNo = null;
             for (JobOrderBrief order : entry.getValue()) {
                 if ("PENDING".equals(order.getStatus()) || "WORKING".equals(order.getStatus())) {
                     open++;
                 }
+                if ("PENDING".equals(order.getStatus())) {
+                    pending++;
+                }
                 if ("WORKING".equals(order.getStatus())) {
                     plotNo = plotNoMap.get(order.getPlotId());
                 }
             }
-            DroneStat old = map.getOrDefault(entry.getKey(), new DroneStat(0, null, 0));
-            map.put(entry.getKey(), new DroneStat(open, plotNo, old.sortCount));
+            DroneStat old = map.getOrDefault(entry.getKey(), new DroneStat(0, 0, null, 0));
+            map.put(entry.getKey(), new DroneStat(open, pending, plotNo, old.sortCount));
+        }
+        return map;
+    }
+
+    /** 每台机未结束的异常处置数 */
+    private Map<Long, Long> openHandlingMap() {
+        Map<Long, Long> map = new HashMap<>();
+        for (String status : PlantRules.HANDLING_OPEN_STATUSES) {
+            for (com.drone.plant.entity.AbnormalHandling handling : handlingRepository
+                    .findByStatusOrderByRegisteredAtDesc(status, com.drone.plant.entity.AbnormalHandling.class)) {
+                map.merge(handling.getDroneId(), 1L, Long::sum);
+            }
         }
         return map;
     }
@@ -245,6 +278,6 @@ public class DroneService {
         return value == null || value.trim().isEmpty();
     }
 
-    private record DroneStat(long openOrders, String currentPlotNo, long sortCount) {
+    private record DroneStat(long openOrders, long pendingOrders, String currentPlotNo, long sortCount) {
     }
 }

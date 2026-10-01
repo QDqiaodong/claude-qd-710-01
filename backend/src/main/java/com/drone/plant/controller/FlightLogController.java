@@ -29,14 +29,16 @@ public class FlightLogController {
 
     @GetMapping
     public ApiResponse<List<Views.FlightLogView>> list(
-            @RequestParam(value = "jobOrderId", required = false) Long jobOrderId) {
-        return ApiResponse.success(flightLogService.list(jobOrderId));
+            @RequestParam(value = "jobOrderId", required = false) Long jobOrderId,
+            @RequestParam(value = "droneId", required = false) Long droneId) {
+        return ApiResponse.success(flightLogService.list(jobOrderId, droneId));
     }
 
     @GetMapping("/abnormal")
     public ApiResponse<List<Views.FlightLogView>> abnormal(
-            @RequestParam(value = "jobOrderId", required = false) Long jobOrderId) {
-        return ApiResponse.success(flightLogService.abnormal(jobOrderId));
+            @RequestParam(value = "jobOrderId", required = false) Long jobOrderId,
+            @RequestParam(value = "droneId", required = false) Long droneId) {
+        return ApiResponse.success(flightLogService.abnormal(jobOrderId, droneId));
     }
 
     /** 汇总条：总架次 / 总时长 / 总亩数 / 总药量 / 异常架次 */

@@ -278,7 +278,7 @@ async function openDrawer(plot) {
 
 async function pickOrder(row) {
   activeOrder.value = row
-  logs.value = await flightLogApi.list(row.id)
+  logs.value = await flightLogApi.list({ jobOrderId: row.id })
 }
 
 async function loadMap() {

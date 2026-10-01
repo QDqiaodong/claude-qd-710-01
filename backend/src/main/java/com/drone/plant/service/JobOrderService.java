@@ -52,11 +52,13 @@ public class JobOrderService {
     private final FlightLogRepository flightLogRepository;
     private final MixingBatchRepository mixingBatchRepository;
     private final MixingService mixingService;
+    private final AbnormalHandlingService handlingService;
 
     public JobOrderService(JobOrderRepository jobOrderRepository, PlotRepository plotRepository,
                            DroneRepository droneRepository, PilotRepository pilotRepository,
                            FlightLogRepository flightLogRepository,
-                           MixingBatchRepository mixingBatchRepository, MixingService mixingService) {
+                           MixingBatchRepository mixingBatchRepository, MixingService mixingService,
+                           AbnormalHandlingService handlingService) {
         this.jobOrderRepository = jobOrderRepository;
         this.plotRepository = plotRepository;
         this.droneRepository = droneRepository;
@@ -64,16 +66,25 @@ public class JobOrderService {
         this.flightLogRepository = flightLogRepository;
         this.mixingBatchRepository = mixingBatchRepository;
         this.mixingService = mixingService;
+        this.handlingService = handlingService;
     }
 
     /**
      * 列表：四条动态投影查询按筛选维度各自命中——
-     * 日期区间 / 地块 / 状态 / 全量，返回形状统一是 {@link JobOrderRow}。
+     * 日期区间 / 地块 / 状态 / 机身 / 全量，返回形状统一是 {@link JobOrderRow}。
      */
     @Transactional(readOnly = true)
-    public List<Views.JobOrderView> list(String status, Long plotId, LocalDate from, LocalDate to) {
+    public List<Views.JobOrderView> list(String status, Long plotId, Long droneId, LocalDate from, LocalDate to) {
         List<JobOrderRow> rows;
-        if (from != null && to != null) {
+        if (droneId != null) {
+            rows = new ArrayList<>();
+            for (JobOrderRow row : jobOrderRepository.findByDroneIdOrderByJobDateDesc(droneId,
+                    JobOrderRow.class)) {
+                if (isBlank(status) || status.equals(row.getStatus())) {
+                    rows.add(row);
+                }
+            }
+        } else if (from != null && to != null) {
             rows = jobOrderRepository.findByJobDateBetweenOrderByJobDateDesc(from, to, JobOrderRow.class);
         } else if (plotId != null) {
             rows = jobOrderRepository.findByPlotIdOrderByJobDateDesc(plotId, JobOrderRow.class);
@@ -147,6 +158,10 @@ public class JobOrderService {
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，不能出库作业");
         }
+        if (handlingService.hasOpenHandling(drone.getId())) {
+            throw new BizException("机身 " + drone.getBodyNo()
+                    + " 有未结束的异常处置（待处置 / 继续观察 / 停飞中），不能起飞，请先完成处置闭环或改派其他机身");
+        }
         // 配药复核闸门：必须存在且仅存在一个仍有效的已锁定批次，快照与当前作业单、载荷逐项一致
         mixingService.assertTakeoffReady(order);
         order.setStatus("WORKING");
@@ -188,7 +203,12 @@ public class JobOrderService {
         plotRepository.save(plot);
 
         Drone drone = requireDrone(order.getDroneId());
-        drone.setStatus("IDLE");
+        // 有未结束异常处置时不能直接回库：转维修等待处置闭环；否则正常回库
+        if (handlingService.hasOpenHandling(drone.getId())) {
+            drone.setStatus("MAINT");
+        } else {
+            drone.setStatus("IDLE");
+        }
         drone.setUpdatedAt(LocalDateTime.now());
         droneRepository.save(drone);
         return reload(saved.getId());
@@ -219,7 +239,12 @@ public class JobOrderService {
         }
         Drone drone = requireDrone(order.getDroneId());
         if ("WORKING".equals(drone.getStatus())) {
-            drone.setStatus("IDLE");
+            // 取消后无在飞单子：有未结束处置则转维修，否则回在库
+            if (handlingService.hasOpenHandling(drone.getId())) {
+                drone.setStatus("MAINT");
+            } else {
+                drone.setStatus("IDLE");
+            }
             drone.setUpdatedAt(LocalDateTime.now());
             droneRepository.save(drone);
         }
@@ -250,6 +275,10 @@ public class JobOrderService {
         if (!"IDLE".equals(drone.getStatus()) && !droneId.equals(order.getDroneId())) {
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，只有「在库」的机才能改派");
+        }
+        if (!droneId.equals(order.getDroneId()) && handlingService.hasOpenHandling(droneId)) {
+            throw new BizException("机身 " + drone.getBodyNo()
+                    + " 有未结束的异常处置，不能改派给它，请选一台处置已闭环的在库机身");
         }
         if (!"ACTIVE".equals(pilot.getStatus())) {
             throw new BizException("飞手 " + pilot.getName() + " 状态为"
@@ -351,6 +380,10 @@ public class JobOrderService {
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，只有「在库」的机才能派航");
         }
+        if (handlingService.hasOpenHandling(drone.getId())) {
+            throw new BizException("机身 " + drone.getBodyNo()
+                    + " 有未结束的异常处置（待处置 / 继续观察 / 停飞中），不能再派新作业单");
+        }
         if (!"ACTIVE".equals(pilot.getStatus())) {
             throw new BizException("飞手 " + pilot.getName() + " 状态为"
                     + PlantRules.pilotStatusName(pilot.getStatus()) + "，不能派工");
@@ -423,9 +456,12 @@ public class JobOrderService {
                 : actual.multiply(BigDecimal.valueOf(100)).divide(planned, 0, RoundingMode.HALF_UP).intValue();
         BigDecimal chemical = book.chemical.getOrDefault(row.getId(), BigDecimal.ZERO);
         MixingBatch mixing = book.openBatch.get(row.getId());
+        String droneStatus = book.droneStatus.get(row.getDroneId());
         return new Views.JobOrderView(row.getId(), row.getOrderNo(), row.getPlotId(),
                 book.plotNo.get(row.getPlotId()), book.farmer.get(row.getPlotId()), row.getDroneId(),
-                book.bodyNo.get(row.getDroneId()), book.model.get(row.getDroneId()), row.getPilotId(),
+                book.bodyNo.get(row.getDroneId()), book.model.get(row.getDroneId()),
+                droneStatus, PlantRules.droneStatusName(droneStatus),
+                book.openHandlingDrones.contains(row.getDroneId()), row.getPilotId(),
                 book.pilotName.get(row.getPilotId()), row.getFormula(), row.getDosePerMu(), planned, actual,
                 row.getJobDate(), row.getWeather(), row.getStatus(),
                 PlantRules.orderStatusName(row.getStatus()), Math.min(progress, 100),
@@ -445,9 +481,11 @@ public class JobOrderService {
         }
         Map<Long, String> bodyNo = new HashMap<>();
         Map<Long, String> model = new HashMap<>();
+        Map<Long, String> droneStatus = new HashMap<>();
         for (DroneOption row : droneRepository.findAllByOrderByBodyNoAsc(DroneOption.class)) {
             bodyNo.put(row.getId(), row.getBodyNo());
             model.put(row.getId(), row.getModel());
+            droneStatus.put(row.getId(), row.getStatus());
         }
         Map<Long, String> pilotName = new HashMap<>();
         for (PilotOption row : pilotRepository.findAllByOrderByPilotNoAsc(PilotOption.class)) {
@@ -467,7 +505,15 @@ public class JobOrderService {
                 openBatch.put(batch.getJobOrderId(), batch);
             }
         }
-        return new NameBook(plotNo, farmer, bodyNo, model, pilotName, chemical, sortCount, openBatch);
+        // 仍有未结束异常处置的机身：待飞单明确提示改派
+        java.util.Set<Long> openHandlingDrones = new java.util.HashSet<>();
+        for (DroneOption row : droneRepository.findAllByOrderByBodyNoAsc(DroneOption.class)) {
+            if (handlingService.hasOpenHandling(row.getId())) {
+                openHandlingDrones.add(row.getId());
+            }
+        }
+        return new NameBook(plotNo, farmer, bodyNo, model, droneStatus, pilotName, chemical, sortCount,
+                openBatch, openHandlingDrones);
     }
 
     private Map<Long, String> plotNoMap() {
@@ -515,7 +561,9 @@ public class JobOrderService {
     }
 
     private record NameBook(Map<Long, String> plotNo, Map<Long, String> farmer, Map<Long, String> bodyNo,
-                            Map<Long, String> model, Map<Long, String> pilotName, Map<Long, BigDecimal> chemical,
-                            Map<Long, Long> sortCount, Map<Long, MixingBatch> openBatch) {
+                            Map<Long, String> model, Map<Long, String> droneStatus,
+                            Map<Long, String> pilotName, Map<Long, BigDecimal> chemical,
+                            Map<Long, Long> sortCount, Map<Long, MixingBatch> openBatch,
+                            java.util.Set<Long> openHandlingDrones) {
     }
 }

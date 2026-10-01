@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.drone.plant.common.BizException;
 import com.drone.plant.dto.FlightLogDtos;
 import com.drone.plant.dto.Views;
+import com.drone.plant.entity.AbnormalHandling;
 import com.drone.plant.entity.Drone;
 import com.drone.plant.entity.FlightLog;
 import com.drone.plant.entity.JobOrder;
@@ -24,6 +25,7 @@ import com.drone.plant.projection.FlightLogStat;
 import com.drone.plant.projection.JobOrderBrief;
 import com.drone.plant.projection.PilotOption;
 import com.drone.plant.projection.PlotOption;
+import com.drone.plant.repository.AbnormalHandlingRepository;
 import com.drone.plant.repository.DroneRepository;
 import com.drone.plant.repository.FlightLogRepository;
 import com.drone.plant.repository.JobOrderRepository;
@@ -45,22 +47,25 @@ public class FlightLogService {
     private final DroneRepository droneRepository;
     private final PilotRepository pilotRepository;
     private final PlotRepository plotRepository;
+    private final AbnormalHandlingRepository handlingRepository;
+    private final AbnormalHandlingService handlingService;
 
     public FlightLogService(FlightLogRepository flightLogRepository, JobOrderRepository jobOrderRepository,
                             DroneRepository droneRepository, PilotRepository pilotRepository,
-                            PlotRepository plotRepository) {
+                            PlotRepository plotRepository, AbnormalHandlingRepository handlingRepository,
+                            AbnormalHandlingService handlingService) {
         this.flightLogRepository = flightLogRepository;
         this.jobOrderRepository = jobOrderRepository;
         this.droneRepository = droneRepository;
         this.pilotRepository = pilotRepository;
         this.plotRepository = plotRepository;
+        this.handlingRepository = handlingRepository;
+        this.handlingService = handlingService;
     }
 
     @Transactional(readOnly = true)
-    public List<Views.FlightLogView> list(Long jobOrderId) {
-        List<FlightLogRow> rows = jobOrderId == null
-                ? flightLogRepository.findAllByOrderByTakeoffAtDesc(FlightLogRow.class)
-                : flightLogRepository.findByJobOrderIdOrderBySeqNoAsc(jobOrderId, FlightLogRow.class);
+    public List<Views.FlightLogView> list(Long jobOrderId, Long droneId) {
+        List<FlightLogRow> rows = queryRows(jobOrderId, droneId, false);
         NameBook book = nameBook();
         List<Views.FlightLogView> list = new ArrayList<>();
         for (FlightLogRow row : rows) {
@@ -71,16 +76,46 @@ public class FlightLogService {
 
     /** 只看异常架次：飞行风险复核入口 */
     @Transactional(readOnly = true)
-    public List<Views.FlightLogView> abnormal(Long jobOrderId) {
-        List<FlightLogRow> rows = jobOrderId == null
-                ? flightLogRepository.findByAbnormalTrueOrderByTakeoffAtDesc(FlightLogRow.class)
-                : flightLogRepository.findByJobOrderIdAndAbnormalTrueOrderBySeqNoAsc(jobOrderId, FlightLogRow.class);
+    public List<Views.FlightLogView> abnormal(Long jobOrderId, Long droneId) {
+        List<FlightLogRow> rows = queryRows(jobOrderId, droneId, true);
         NameBook book = nameBook();
         List<Views.FlightLogView> list = new ArrayList<>();
         for (FlightLogRow row : rows) {
             list.add(toView(row, book));
         }
         return list;
+    }
+
+    /**
+     * 按作业单 / 机身 / 是否异常取架次：
+     * 按机身筛时先把该机身的作业单 id 算出来，再用 IN 一次取回（飞行日志不直接存 drone_id）。
+     */
+    private List<FlightLogRow> queryRows(Long jobOrderId, Long droneId, boolean onlyAbnormal) {
+        if (droneId != null) {
+            List<Long> orderIds = new ArrayList<>();
+            for (JobOrderBrief order : jobOrderRepository.findByDroneIdOrderByJobDateDesc(droneId,
+                    JobOrderBrief.class)) {
+                if (jobOrderId == null || jobOrderId.equals(order.getId())) {
+                    orderIds.add(order.getId());
+                }
+            }
+            if (orderIds.isEmpty()) {
+                return List.of();
+            }
+            return onlyAbnormal
+                    ? flightLogRepository.findByJobOrderIdInAndAbnormalTrueOrderByTakeoffAtDesc(orderIds,
+                            FlightLogRow.class)
+                    : flightLogRepository.findByJobOrderIdInOrderByTakeoffAtDesc(orderIds, FlightLogRow.class);
+        }
+        if (jobOrderId != null) {
+            return onlyAbnormal
+                    ? flightLogRepository.findByJobOrderIdAndAbnormalTrueOrderBySeqNoAsc(jobOrderId,
+                            FlightLogRow.class)
+                    : flightLogRepository.findByJobOrderIdOrderBySeqNoAsc(jobOrderId, FlightLogRow.class);
+        }
+        return onlyAbnormal
+                ? flightLogRepository.findByAbnormalTrueOrderByTakeoffAtDesc(FlightLogRow.class)
+                : flightLogRepository.findAllByOrderByTakeoffAtDesc(FlightLogRow.class);
     }
 
     /** 汇总条：总架次 / 总时长 / 总亩数 / 总药量 / 异常架次，全部走 {@link FlightLogStat} 投影 */
@@ -207,6 +242,11 @@ public class FlightLogService {
         pilot.setUpdatedAt(LocalDateTime.now());
         pilotRepository.save(pilot);
 
+        // 异常架次：登记即自动立案进入待处置（同一事务内，立案失败则整笔架次登记回滚）
+        if (abnormal) {
+            handlingService.register(saved, order, pilot);
+        }
+
         return toView(flightLogRepository.findByJobOrderIdOrderBySeqNoAsc(jobOrderId, FlightLogRow.class)
                 .stream().filter(row -> saved.getId().equals(row.getId())).findFirst()
                 .orElseThrow(() -> new BizException("架次登记失败，请刷新重试")), nameBook());
@@ -215,12 +255,19 @@ public class FlightLogService {
     // ---------------- 内部工具 ----------------
 
     private Views.FlightLogView toView(FlightLogRow row, NameBook book) {
+        Long droneId = book.droneOfOrder.get(row.getJobOrderId());
+        AbnormalHandling handling = Boolean.TRUE.equals(row.getAbnormal())
+                ? handlingRepository.findByFlightLogId(row.getId()).orElse(null)
+                : null;
         return new Views.FlightLogView(row.getId(), row.getJobOrderId(), book.orderNo.get(row.getJobOrderId()),
-                book.plotNo.get(book.plotOfOrder.get(row.getJobOrderId())),
-                book.bodyNo.get(book.droneOfOrder.get(row.getJobOrderId())),
+                book.plotNo.get(book.plotOfOrder.get(row.getJobOrderId())), droneId,
+                book.bodyNo.get(droneId),
                 book.pilotName.get(book.pilotOfOrder.get(row.getJobOrderId())), row.getSeqNo(), row.getTakeoffAt(),
                 row.getLandingAt(), row.getDurationMin(), row.getAreaMu(), row.getChemicalL(), row.getWindSpeed(),
-                row.getTemperature(), Boolean.TRUE.equals(row.getAbnormal()), row.getAbnormalDesc());
+                row.getTemperature(), Boolean.TRUE.equals(row.getAbnormal()), row.getAbnormalDesc(),
+                handling == null ? null : handling.getId(),
+                handling == null ? null : handling.getStatus(),
+                handling == null ? null : PlantRules.handlingStatusName(handling.getStatus()));
     }
 
     /** 日志要显示「哪个单子 / 哪块地 / 哪台机 / 谁飞的」——一次性把四张表的编号查成 map */

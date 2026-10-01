@@ -40,13 +40,16 @@ public class DroneService {
     private final JobOrderRepository jobOrderRepository;
     private final FlightLogRepository flightLogRepository;
     private final PlotRepository plotRepository;
+    private final AbnormalHandlingService handlingService;
 
     public DroneService(DroneRepository droneRepository, JobOrderRepository jobOrderRepository,
-                        FlightLogRepository flightLogRepository, PlotRepository plotRepository) {
+                        FlightLogRepository flightLogRepository, PlotRepository plotRepository,
+                        AbnormalHandlingService handlingService) {
         this.droneRepository = droneRepository;
         this.jobOrderRepository = jobOrderRepository;
         this.flightLogRepository = flightLogRepository;
         this.plotRepository = plotRepository;
+        this.handlingService = handlingService;
     }
 
     @Transactional(readOnly = true)
@@ -63,23 +66,26 @@ public class DroneService {
         List<Views.DroneView> list = new ArrayList<>();
         for (DroneCard row : rows) {
             DroneStat stat = stats.get(row.getId());
+            long openHandling = handlingService.openCount(row.getId());
             list.add(new Views.DroneView(row.getId(), row.getBodyNo(), row.getModel(), row.getDroneType(),
                     PlantRules.droneTypeName(row.getDroneType()), row.getMaxPayload(), row.getSprayWidth(),
                     row.getTotalFlightHours(), row.getTotalAreaMu(), row.getBatteryPacks(), row.getStatus(),
                     PlantRules.droneStatusName(row.getStatus()), row.getPurchaseDate(),
                     stat == null ? 0 : stat.openOrders, stat == null ? null : stat.currentPlotNo,
-                    stat == null ? 0 : stat.sortCount, null));
+                    stat == null ? 0 : stat.sortCount, null,
+                    openHandling, handlingService.isGrounded(row.getId())));
         }
         return list;
     }
 
-    /** 下拉框：同一方法取 {@link DroneOption} 形状 */
+    /** 下拉框：同一方法取 {@link DroneOption} 形状；停飞中的机身在派工下拉里给出标记（前端禁用） */
     @Transactional(readOnly = true)
     public List<Views.DroneOptionView> options() {
         List<Views.DroneOptionView> list = new ArrayList<>();
         for (DroneOption row : droneRepository.findAllByOrderByBodyNoAsc(DroneOption.class)) {
             list.add(new Views.DroneOptionView(row.getId(), row.getBodyNo(), row.getModel(), row.getStatus(),
-                    PlantRules.droneStatusName(row.getStatus()), row.getMaxPayload()));
+                    PlantRules.droneStatusName(row.getStatus()), row.getMaxPayload(),
+                    handlingService.isGrounded(row.getId())));
         }
         return list;
     }
@@ -141,7 +147,7 @@ public class DroneService {
                 PlantRules.droneTypeName(saved.getDroneType()), saved.getMaxPayload(), saved.getSprayWidth(),
                 saved.getTotalFlightHours(), saved.getTotalAreaMu(), saved.getBatteryPacks(), saved.getStatus(),
                 PlantRules.droneStatusName(saved.getStatus()), saved.getPurchaseDate(), 0, null, 0,
-                saved.getUpdatedAt());
+                saved.getUpdatedAt(), 0, false);
     }
 
     /** 状态切换：在库 ↔ 维修 / 停用；进出的「作业中」由作业单流转推进 */
@@ -162,6 +168,11 @@ public class DroneService {
                         + PlantRules.droneStatusName(target));
             }
         }
+        // 仍有未结束（待处置 / 继续观察 / 已停飞）处置时，机身不能切回在库：先由值班主管解除处置
+        if ("IDLE".equals(target) && handlingService.openCount(id) > 0) {
+            throw new BizException(drone.getBodyNo() + " 还有 " + handlingService.openCount(id)
+                    + " 条未结束的异常处置，不能切回在库；请先在异常处置台由值班主管解除");
+        }
         drone.setStatus(target);
         drone.setUpdatedAt(LocalDateTime.now());
         Drone saved = droneRepository.save(drone);
@@ -171,7 +182,8 @@ public class DroneService {
                 saved.getTotalFlightHours(), saved.getTotalAreaMu(), saved.getBatteryPacks(), saved.getStatus(),
                 PlantRules.droneStatusName(saved.getStatus()), saved.getPurchaseDate(),
                 stat == null ? 0 : stat.openOrders, stat == null ? null : stat.currentPlotNo,
-                stat == null ? 0 : stat.sortCount, saved.getUpdatedAt());
+                stat == null ? 0 : stat.sortCount, saved.getUpdatedAt(),
+                handlingService.openCount(id), handlingService.isGrounded(id));
     }
 
     private boolean hasWorkingOrder(Long droneId) {

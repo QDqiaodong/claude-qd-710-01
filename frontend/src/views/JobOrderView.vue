@@ -28,7 +28,12 @@
         <el-table-column label="地块 / 承包户" min-width="180">
           <template #default="{ row }">{{ row.plotNo }} · {{ row.farmerName }}</template>
         </el-table-column>
-        <el-table-column prop="droneBodyNo" label="机身" width="96" />
+        <el-table-column prop="droneBodyNo" label="机身" width="96">
+          <template #default="{ row }">
+            <span :style="{ color: row.droneGrounded ? '#c62828' : '' }">{{ row.droneBodyNo }}</span>
+            <el-tag v-if="row.droneGrounded" type="danger" size="small" effect="dark" style="margin-left: 4px">停飞</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="pilotName" label="飞手" width="90" />
         <el-table-column prop="formula" label="药剂配方" min-width="200" show-overflow-tooltip />
         <el-table-column prop="dosePerMu" label="亩用量" width="90" />
@@ -66,7 +71,9 @@
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'PENDING'" size="small" type="primary" @click="takeoff(row)">起飞</el-button>
+            <el-button v-if="row.status === 'PENDING' && row.droneGrounded" size="small" type="warning"
+                       @click="openEdit(row)">停飞改派</el-button>
+            <el-button v-if="row.status === 'PENDING' && !row.droneGrounded" size="small" type="primary" @click="takeoff(row)">起飞</el-button>
             <el-button v-if="row.status === 'WORKING'" size="small" type="success" @click="finish(row)">完成</el-button>
             <el-button v-if="row.status === 'PENDING'" size="small" @click="openEdit(row)">改派/改口径</el-button>
             <el-button v-if="row.status === 'PENDING' || row.status === 'WORKING'" size="small" type="danger" @click="cancel(row)">取消</el-button>
@@ -74,6 +81,16 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 停飞机身的待飞单汇总：明确提示改派 -->
+      <el-alert v-if="groundedOrders.length" type="error" :closable="false" show-icon style="margin-top: 12px"
+        :title="`以下 ${groundedOrders.length} 张待飞作业单的机身已被异常处置停飞，不得再用该机起飞，请逐张改派：`">
+        <div v-for="o in groundedOrders" :key="o.id" style="margin-top: 4px">
+          <el-button link type="warning" size="small" @click="openEdit(o)">
+            {{ o.orderNo }} · {{ o.plotNo }} · {{ o.farmerName }} · 机身 {{ o.droneBodyNo }} · {{ o.jobDate }} → 立即改派
+          </el-button>
+        </div>
+      </el-alert>
     </div>
 
     <el-dialog v-model="createVisible" title="新建作业单" width="560">
@@ -86,7 +103,9 @@
         </el-form-item>
         <el-form-item label="无人机">
           <el-select v-model="form.droneId" filterable placeholder="选择机身" style="width: 100%">
-            <el-option v-for="d in droneOptions" :key="d.id" :label="d.bodyNo + ' · ' + d.model" :value="d.id" />
+            <el-option v-for="d in droneOptions" :key="d.id"
+              :label="d.bodyNo + ' · ' + d.model + (d.status !== 'IDLE' ? '（' + d.statusName + '不可派）' : '')"
+              :value="d.id" :disabled="d.status !== 'IDLE'" />
           </el-select>
         </el-form-item>
         <el-form-item label="飞手">
@@ -109,7 +128,10 @@
     </el-dialog>
 
     <el-dialog v-model="editVisible" title="改派无人机 / 修改配药口径" width="560">
-      <el-alert v-if="editTarget && editTarget.mixingBatchId" type="warning" :closable="false"
+      <el-alert v-if="editTarget && editTarget.droneGrounded" type="error" :closable="false" show-icon
+        style="margin-bottom: 12px"
+        :title="`原机身 ${editTarget.droneBodyNo} 已被异常处置停飞（维修中），本单必须改派其他在库机身才能起飞`" />
+      <el-alert v-else-if="editTarget && editTarget.mixingBatchId" type="warning" :closable="false"
         style="margin-bottom: 12px"
         title="无人机、药剂配方、亩用量、计划亩数任一变化，原已锁定配药批次会立即失效，需按新条件重新发起配药复核" />
       <el-form :model="editForm" label-width="110px">
@@ -123,7 +145,9 @@
         </el-form-item>
         <el-form-item label="改派无人机">
           <el-select v-model="editForm.droneId" filterable style="width: 100%">
-            <el-option v-for="d in droneOptions" :key="d.id" :label="d.bodyNo + ' · ' + d.model + ' · 载荷' + d.maxPayload + 'L'" :value="d.id" />
+            <el-option v-for="d in droneOptions" :key="d.id"
+              :label="d.bodyNo + ' · ' + d.model + ' · 载荷' + d.maxPayload + 'L' + (d.status !== 'IDLE' ? '（' + d.statusName + '不可派）' : '')"
+              :value="d.id" :disabled="d.status !== 'IDLE'" />
           </el-select>
         </el-form-item>
         <el-form-item label="飞手">
@@ -149,10 +173,11 @@
 
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { droneApi, jobOrderApi, pilotApi, plotApi } from '../api'
 
+const route = useRoute()
 const router = useRouter()
 const plant = inject('plant')
 const orders = ref([])
@@ -180,6 +205,9 @@ const form = ref({
 const plannedTotal = computed(() => orders.value.reduce((s, r) => s + Number(r.plannedMu || 0), 0))
 const actualTotal = computed(() => orders.value.reduce((s, r) => s + Number(r.actualMu || 0), 0))
 const chemicalTotal = computed(() => orders.value.reduce((s, r) => s + Number(r.chemicalL || 0), 0))
+
+/** 绑定机身已停飞的待飞单：必须改派 */
+const groundedOrders = computed(() => orders.value.filter((r) => r.status === 'PENDING' && r.droneGrounded))
 
 function count(status) {
   return orders.value.filter((r) => r.status === status).length
@@ -292,5 +320,12 @@ onMounted(async () => {
   plotOptions.value = await plotApi.options()
   droneOptions.value = await droneApi.options()
   pilotOptions.value = await pilotApi.options()
+  // 从异常处置台的「去改派」进入：直接打开该待飞单的改派弹窗
+  if (route.query.editOrderId) {
+    const target = orders.value.find((o) => String(o.id) === String(route.query.editOrderId))
+    if (target && target.status === 'PENDING') {
+      openEdit(target)
+    }
+  }
 })
 </script>

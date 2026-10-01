@@ -52,11 +52,13 @@ public class JobOrderService {
     private final FlightLogRepository flightLogRepository;
     private final MixingBatchRepository mixingBatchRepository;
     private final MixingService mixingService;
+    private final AbnormalHandlingService handlingService;
 
     public JobOrderService(JobOrderRepository jobOrderRepository, PlotRepository plotRepository,
                            DroneRepository droneRepository, PilotRepository pilotRepository,
                            FlightLogRepository flightLogRepository,
-                           MixingBatchRepository mixingBatchRepository, MixingService mixingService) {
+                           MixingBatchRepository mixingBatchRepository, MixingService mixingService,
+                           AbnormalHandlingService handlingService) {
         this.jobOrderRepository = jobOrderRepository;
         this.plotRepository = plotRepository;
         this.droneRepository = droneRepository;
@@ -64,6 +66,7 @@ public class JobOrderService {
         this.flightLogRepository = flightLogRepository;
         this.mixingBatchRepository = mixingBatchRepository;
         this.mixingService = mixingService;
+        this.handlingService = handlingService;
     }
 
     /**
@@ -144,6 +147,10 @@ public class JobOrderService {
             throw new BizException("飞手 " + pilot.getName() + " 当前不在队，无法执行本次作业");
         }
         if (!"IDLE".equals(drone.getStatus())) {
+            if (handlingService.isGrounded(drone.getId())) {
+                throw new BizException("机身 " + drone.getBodyNo()
+                        + " 已被异常处置停飞（维修中），本单请先改派其他机身再起飞");
+            }
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，不能出库作业");
         }
@@ -188,9 +195,12 @@ public class JobOrderService {
         plotRepository.save(plot);
 
         Drone drone = requireDrone(order.getDroneId());
-        drone.setStatus("IDLE");
-        drone.setUpdatedAt(LocalDateTime.now());
-        droneRepository.save(drone);
+        // 机身上还有未结束异常处置（继续观察 / 已停飞）时保持维修中，不能自动回库
+        if (!"DISABLED".equals(drone.getStatus()) && handlingService.openCount(drone.getId()) == 0) {
+            drone.setStatus("IDLE");
+            drone.setUpdatedAt(LocalDateTime.now());
+            droneRepository.save(drone);
+        }
         return reload(saved.getId());
     }
 
@@ -218,7 +228,8 @@ public class JobOrderService {
             }
         }
         Drone drone = requireDrone(order.getDroneId());
-        if ("WORKING".equals(drone.getStatus())) {
+        // 已被异常处置停飞 / 仍在观察的机身保持维修中，不能因取消作业单切回在库
+        if ("WORKING".equals(drone.getStatus()) && handlingService.openCount(drone.getId()) == 0) {
             drone.setStatus("IDLE");
             drone.setUpdatedAt(LocalDateTime.now());
             droneRepository.save(drone);
@@ -250,6 +261,10 @@ public class JobOrderService {
         if (!"IDLE".equals(drone.getStatus()) && !droneId.equals(order.getDroneId())) {
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，只有「在库」的机才能改派");
+        }
+        if (handlingService.isGrounded(droneId)) {
+            throw new BizException("机身 " + drone.getBodyNo()
+                    + " 已被异常处置停飞（维修中），尚未起飞的作业单不得再选用该机，请改派其他机身");
         }
         if (!"ACTIVE".equals(pilot.getStatus())) {
             throw new BizException("飞手 " + pilot.getName() + " 状态为"
@@ -347,6 +362,10 @@ public class JobOrderService {
         if ("HOLD".equals(plot.getStatus())) {
             throw new BizException("地块 " + plot.getPlotNo() + " 处于暂缓状态，不能派航");
         }
+        if (handlingService.isGrounded(drone.getId())) {
+            throw new BizException("机身 " + drone.getBodyNo()
+                    + " 已被异常处置停飞（维修中），尚未起飞的作业单不得再选用该机，请改派其他机身");
+        }
         if (!"IDLE".equals(drone.getStatus())) {
             throw new BizException("机身 " + drone.getBodyNo() + " 当前状态为"
                     + PlantRules.droneStatusName(drone.getStatus()) + "，只有「在库」的机才能派航");
@@ -423,9 +442,14 @@ public class JobOrderService {
                 : actual.multiply(BigDecimal.valueOf(100)).divide(planned, 0, RoundingMode.HALF_UP).intValue();
         BigDecimal chemical = book.chemical.getOrDefault(row.getId(), BigDecimal.ZERO);
         MixingBatch mixing = book.openBatch.get(row.getId());
+        Drone drone = book.drones.get(row.getDroneId());
+        boolean grounded = drone != null && handlingService.isGrounded(drone.getId());
         return new Views.JobOrderView(row.getId(), row.getOrderNo(), row.getPlotId(),
                 book.plotNo.get(row.getPlotId()), book.farmer.get(row.getPlotId()), row.getDroneId(),
-                book.bodyNo.get(row.getDroneId()), book.model.get(row.getDroneId()), row.getPilotId(),
+                book.bodyNo.get(row.getDroneId()), book.model.get(row.getDroneId()),
+                drone == null ? null : drone.getStatus(),
+                drone == null ? null : PlantRules.droneStatusName(drone.getStatus()),
+                grounded, row.getPilotId(),
                 book.pilotName.get(row.getPilotId()), row.getFormula(), row.getDosePerMu(), planned, actual,
                 row.getJobDate(), row.getWeather(), row.getStatus(),
                 PlantRules.orderStatusName(row.getStatus()), Math.min(progress, 100),
@@ -445,9 +469,13 @@ public class JobOrderService {
         }
         Map<Long, String> bodyNo = new HashMap<>();
         Map<Long, String> model = new HashMap<>();
+        Map<Long, Drone> drones = new HashMap<>();
         for (DroneOption row : droneRepository.findAllByOrderByBodyNoAsc(DroneOption.class)) {
             bodyNo.put(row.getId(), row.getBodyNo());
             model.put(row.getId(), row.getModel());
+        }
+        for (Drone drone : droneRepository.findAll()) {
+            drones.put(drone.getId(), drone);
         }
         Map<Long, String> pilotName = new HashMap<>();
         for (PilotOption row : pilotRepository.findAllByOrderByPilotNoAsc(PilotOption.class)) {
@@ -467,7 +495,7 @@ public class JobOrderService {
                 openBatch.put(batch.getJobOrderId(), batch);
             }
         }
-        return new NameBook(plotNo, farmer, bodyNo, model, pilotName, chemical, sortCount, openBatch);
+        return new NameBook(plotNo, farmer, bodyNo, model, drones, pilotName, chemical, sortCount, openBatch);
     }
 
     private Map<Long, String> plotNoMap() {
@@ -515,7 +543,8 @@ public class JobOrderService {
     }
 
     private record NameBook(Map<Long, String> plotNo, Map<Long, String> farmer, Map<Long, String> bodyNo,
-                            Map<Long, String> model, Map<Long, String> pilotName, Map<Long, BigDecimal> chemical,
-                            Map<Long, Long> sortCount, Map<Long, MixingBatch> openBatch) {
+                            Map<Long, String> model, Map<Long, Drone> drones, Map<Long, String> pilotName,
+                            Map<Long, BigDecimal> chemical, Map<Long, Long> sortCount,
+                            Map<Long, MixingBatch> openBatch) {
     }
 }

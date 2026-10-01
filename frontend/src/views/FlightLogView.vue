@@ -3,10 +3,14 @@
     <div class="panel">
       <div class="panel-head">
         <h3>飞行日志</h3>
-        <span class="panel-sub">按架次登记的起降时间、作业亩数与消耗药量，异常架次整行标红</span>
+        <span class="panel-sub">按架次登记的起降时间、作业亩数与消耗药量，异常架次整行标红、登记后自动进入待处置</span>
         <div class="panel-extra">
-          <el-select v-model="orderId" clearable filterable placeholder="按作业单筛选" style="width: 260px" @change="load">
+          <el-select v-model="orderId" clearable filterable placeholder="按作业单筛选" style="width: 240px" @change="onFilter">
             <el-option v-for="o in orderOptions" :key="o.id" :label="o.orderNo + ' · ' + (o.plotNo || '') + ' · ' + o.jobDate" :value="o.id" />
+          </el-select>
+          <el-select v-model="droneId" clearable filterable placeholder="按机身筛选" style="width: 180px" @change="onFilter">
+            <el-option v-for="d in droneOptions" :key="d.id"
+              :label="d.bodyNo + ' · ' + d.model + (d.grounded ? '（停飞中）' : '')" :value="d.id" />
           </el-select>
           <el-switch v-model="onlyAbnormal" active-text="只看异常" @change="load" />
           <el-button size="small" @click="load">刷新</el-button>
@@ -27,7 +31,12 @@
         <el-table-column prop="seqNo" label="架次" width="64" />
         <el-table-column prop="orderNo" label="作业单" width="132" />
         <el-table-column prop="plotNo" label="地块" width="80" />
-        <el-table-column prop="droneBodyNo" label="机身" width="92" />
+        <el-table-column label="机身" width="100">
+          <template #default="{ row }">
+            <el-button link :type="row.handlingStatus === 'GROUNDED' ? 'danger' : 'primary'" size="small"
+                       @click="goDrone(row)">{{ row.droneBodyNo }}</el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="pilotName" label="飞手" width="88" />
         <el-table-column label="起飞" width="152">
           <template #default="{ row }">{{ fmt(row.takeoffAt) }}</template>
@@ -44,10 +53,20 @@
           </template>
         </el-table-column>
         <el-table-column prop="temperature" label="气温" width="76" />
-        <el-table-column label="异常描述" min-width="240">
+        <el-table-column label="异常描述" min-width="220">
           <template #default="{ row }">
             <span v-if="row.abnormal" style="color: #c62828">{{ row.abnormalDesc }}</span>
             <span v-else class="muted">正常</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="处置" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.abnormal && row.handlingId" link size="small"
+                       :type="handlingType(row.handlingStatus)" @click="goHandling(row)">
+              {{ row.handlingStatusName }}
+            </el-button>
+            <span v-else-if="row.abnormal" class="muted">待生成</span>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
       </el-table>
@@ -68,6 +87,8 @@
         <el-form-item label="气温"><el-input-number v-model="form.temperature" :min="-10" :max="45" :step="0.1" :precision="1" /></el-form-item>
         <el-form-item label="是否异常"><el-switch v-model="form.abnormal" /></el-form-item>
         <el-form-item v-if="form.abnormal" label="异常描述"><el-input v-model="form.abnormalDesc" type="textarea" :rows="2" /></el-form-item>
+        <el-alert v-if="form.abnormal" type="warning" :closable="false" show-icon
+                  title="标记异常并提交后，系统自动生成「待处置」处置单，由值班主管在异常处置台继续观察 / 停飞 / 解除" />
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -79,13 +100,18 @@
 
 <script setup>
 import { inject, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { flightLogApi, jobOrderApi } from '../api'
+import { droneApi, flightLogApi, jobOrderApi } from '../api'
 
+const route = useRoute()
+const router = useRouter()
 const plant = inject('plant')
 const logs = ref([])
 const orderOptions = ref([])
+const droneOptions = ref([])
 const orderId = ref(null)
+const droneId = ref(null)
 const onlyAbnormal = ref(false)
 const summary = ref({})
 const createVisible = ref(false)
@@ -98,14 +124,26 @@ const form = ref({
 const fmt = (value) => (value ? String(value).replace('T', ' ') : '—')
 const rowClass = ({ row }) => (row.abnormal ? 'row-abnormal' : '')
 
+function handlingType(status) {
+  return { PENDING: 'danger', OBSERVING: 'warning', GROUNDED: 'info', RESOLVED: 'success' }[status] || ''
+}
+
+function onFilter() {
+  // 作业单与机身筛选同时给时以作业单为准（作业单只对应一台机）
+  load()
+}
+
 async function load() {
-  const params = orderId.value || null
+  const params = {}
+  if (orderId.value) params.jobOrderId = orderId.value
+  if (droneId.value) params.droneId = droneId.value
   logs.value = onlyAbnormal.value ? await flightLogApi.abnormal(params) : await flightLogApi.list(params)
   summary.value = await flightLogApi.summary(params)
 }
 
 async function loadOptions() {
   orderOptions.value = await jobOrderApi.options()
+  droneOptions.value = await droneApi.options()
 }
 
 async function submitCreate() {
@@ -114,15 +152,30 @@ async function submitCreate() {
     ElMessage.warning('作业单、起飞与降落时间都要选')
     return
   }
-  await flightLogApi.create(f)
-  ElMessage.success('架次已登记，累计数据已回填')
+  const created = await flightLogApi.create(f)
+  ElMessage.success(f.abnormal
+    ? '架次已登记，异常已自动进入待处置，请值班主管到「异常处置」处理'
+    : '架次已登记，累计数据已回填')
   createVisible.value = false
   await load()
   plant.reloadOverview()
+  if (f.abnormal && created.handlingId) {
+    router.push({ path: '/handlings', query: { flightLogId: created.id } })
+  }
+}
+
+function goDrone(row) {
+  router.push({ path: '/drones', query: { droneId: row.droneId } })
+}
+
+function goHandling(row) {
+  router.push({ path: '/handlings', query: { flightLogId: row.id } })
 }
 
 onMounted(async () => {
   await loadOptions()
+  if (route.query.jobOrderId) orderId.value = Number(route.query.jobOrderId)
+  if (route.query.droneId) droneId.value = Number(route.query.droneId)
   await load()
 })
 </script>

@@ -17,6 +17,7 @@ import com.drone.plant.projection.FlightLogStat;
 import com.drone.plant.projection.JobOrderBrief;
 import com.drone.plant.projection.PlotOption;
 import com.drone.plant.projection.PlotSummary;
+import com.drone.plant.repository.AbnormalHandlingRepository;
 import com.drone.plant.repository.DroneRepository;
 import com.drone.plant.repository.FlightLogRepository;
 import com.drone.plant.repository.JobOrderRepository;
@@ -51,15 +52,17 @@ public class FarmService {
     private final FlightLogRepository flightLogRepository;
     private final DroneRepository droneRepository;
     private final PilotRepository pilotRepository;
+    private final AbnormalHandlingRepository handlingRepository;
 
     public FarmService(PlotRepository plotRepository, JobOrderRepository jobOrderRepository,
                        FlightLogRepository flightLogRepository, DroneRepository droneRepository,
-                       PilotRepository pilotRepository) {
+                       PilotRepository pilotRepository, AbnormalHandlingRepository handlingRepository) {
         this.plotRepository = plotRepository;
         this.jobOrderRepository = jobOrderRepository;
         this.flightLogRepository = flightLogRepository;
         this.droneRepository = droneRepository;
         this.pilotRepository = pilotRepository;
+        this.handlingRepository = handlingRepository;
     }
 
     /** 作业地图：一块多边形一行，含顶点、颜色、是否叠加喷洒航线条纹 */
@@ -137,7 +140,10 @@ public class FarmService {
                 jobOrderRepository.countByStatus("CANCELED"),
                 plannedMu.setScale(2, RoundingMode.HALF_UP),
                 actualMu.setScale(2, RoundingMode.HALF_UP),
-                rows, abnormal, minutes, chemical.setScale(2, RoundingMode.HALF_UP));
+                rows, abnormal,
+                handlingRepository.countByStatus("PENDING"),
+                handlingRepository.countByStatusNot("RESOLVED"),
+                minutes, chemical.setScale(2, RoundingMode.HALF_UP));
     }
 
     // ---------------- 几何：4×3 田块拼接 ----------------

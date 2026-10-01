@@ -67,7 +67,9 @@ public final class Views {
             long openOrders,
             String currentPlotNo,
             long sortCount,
-            LocalDateTime updatedAt) {
+            LocalDateTime updatedAt,
+            long openHandlingCount,
+            boolean grounded) {
     }
 
     /** 飞手台账（卡片墙用） */
@@ -98,6 +100,9 @@ public final class Views {
             Long droneId,
             String droneBodyNo,
             String droneModel,
+            String droneStatus,
+            String droneStatusName,
+            boolean droneGrounded,
             Long pilotId,
             String pilotName,
             String formula,
@@ -124,6 +129,7 @@ public final class Views {
             Long jobOrderId,
             String orderNo,
             String plotNo,
+            Long droneId,
             String droneBodyNo,
             String pilotName,
             Integer seqNo,
@@ -135,7 +141,10 @@ public final class Views {
             BigDecimal windSpeed,
             BigDecimal temperature,
             boolean abnormal,
-            String abnormalDesc) {
+            String abnormalDesc,
+            Long handlingId,
+            String handlingStatus,
+            String handlingStatusName) {
     }
 
     /** 作业地图一块多边形：几何 + 着色 + 是否叠加喷洒航线 */
@@ -171,7 +180,7 @@ public final class Views {
 
     /** 派工下拉框：无人机瘦身形状（机身编号 + 型号 + 状态 + 最大载荷） */
     public record DroneOptionView(Long id, String bodyNo, String model, String status, String statusName,
-                                  BigDecimal maxPayload) {
+                                  BigDecimal maxPayload, boolean grounded) {
     }
 
     /** 派工下拉框：飞手瘦身形状（编号 + 姓名 + 执照等级） */
@@ -276,7 +285,67 @@ public final class Views {
             BigDecimal actualMuTotal,
             long logRows,
             long abnormalRows,
+            long handlingPending,
+            long handlingOpen,
             long totalMinutes,
             BigDecimal chemicalTotal) {
+    }
+
+    // ---------------- 模块五（二）：异常架次停飞处置 ----------------
+
+    /** 受停飞影响的待飞作业单（处置详情里提示改派用） */
+    public record GroundedOrderView(
+            Long id,
+            String orderNo,
+            String plotNo,
+            String farmerName,
+            LocalDate jobDate,
+            String pilotName) {
+    }
+
+    /** 处置留痕时间线一条 */
+    public record HandlingActionView(
+            Long id,
+            String action,
+            String actionName,
+            Long supervisorId,
+            String supervisorName,
+            String remark,
+            LocalDateTime createdAt) {
+    }
+
+    /** 异常处置单列表行 / 详情（列表行的时间线与受影响待飞单为空集合） */
+    public record HandlingView(
+            Long id,
+            String handlingNo,
+            Long flightLogId,
+            Integer seqNo,
+            Long jobOrderId,
+            String orderNo,
+            String plotNo,
+            String farmerName,
+            Long droneId,
+            String droneBodyNo,
+            String droneModel,
+            String droneStatus,
+            String droneStatusName,
+            String status,
+            String statusName,
+            Long registrarId,
+            String registrarName,
+            Long supervisorId,
+            String supervisorName,
+            String abnormalDesc,
+            String decision,
+            String handleRemark,
+            String conclusion,
+            LocalDateTime takeoffAt,
+            LocalDateTime observedAt,
+            LocalDateTime groundedAt,
+            LocalDateTime resolvedAt,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt,
+            List<GroundedOrderView> groundedOrders,
+            List<HandlingActionView> actions) {
     }
 }

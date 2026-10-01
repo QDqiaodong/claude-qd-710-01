@@ -3,7 +3,7 @@
     <div class="panel">
       <div class="panel-head">
         <h3>植保无人机</h3>
-        <span class="panel-sub">载荷 / 喷幅 / 累计飞行小时与作业亩数 · 在库的机可派机</span>
+        <span class="panel-sub">载荷 / 喷幅 / 累计飞行小时与作业亩数 · 在库的机可派机 · 点机身看异常处置</span>
         <div class="panel-extra">
           <el-select v-model="filterStatus" clearable placeholder="状态筛选" style="width: 150px" @change="load">
             <el-option v-for="s in droneStatuses" :key="s.value" :label="s.label" :value="s.value" />
@@ -17,17 +17,21 @@
         <div class="sb-item"><span>机身总数</span><b>{{ drones.length }}</b></div>
         <div class="sb-item"><span>在库</span><b>{{ count('IDLE') }}</b></div>
         <div class="sb-item"><span>作业中</span><b>{{ count('WORKING') }}</b></div>
-        <div class="sb-item"><span>维修 / 停用</span><b>{{ count('MAINT') + count('DISABLED') }}</b></div>
+        <div class="sb-item is-alert-card"><span>维修(含停飞)</span><b>{{ count('MAINT') }}</b></div>
+        <div class="sb-item"><span>未结束处置</span><b :style="{ color: '#c62828' }">{{ openHandlingTotal }}</b></div>
         <div class="sb-item"><span>累计作业亩数</span><b>{{ totalArea.toFixed(1) }}</b></div>
         <div class="sb-item"><span>累计飞行小时</span><b>{{ totalHours.toFixed(1) }}</b></div>
       </div>
 
       <div class="card-grid">
-        <div v-for="d in drones" :key="d.id" class="unit-card">
+        <div v-for="d in drones" :key="d.id" class="unit-card" :class="{ 'card-grounded': d.grounded }">
           <div class="uc-head">
             <span class="uc-icon">🚁</span>
             <div>
-              <div class="uc-id">{{ d.bodyNo }}</div>
+              <div class="uc-id">
+                <el-button link type="primary" size="small" style="font-weight: 700; font-size: 15px"
+                           @click="openDetail(d)">{{ d.bodyNo }}</el-button>
+              </div>
               <div class="uc-sub">{{ d.model }} · {{ d.droneTypeName }}</div>
             </div>
             <span class="mini-tag" style="margin-left: auto" :style="statusStyle(d.status)">
@@ -48,17 +52,80 @@
             <span class="mini-tag">在手作业单 {{ d.openOrders }}</span>
             <span v-if="d.currentPlotNo" class="mini-tag">正在喷：{{ d.currentPlotNo }}</span>
             <span class="mini-tag">累计 {{ d.sortCount }} 架次</span>
+            <el-button v-if="d.openHandlingCount > 0" link type="danger" size="small" @click="openDetail(d)">
+              异常处置 {{ d.openHandlingCount }}
+            </el-button>
           </div>
+
+          <el-alert v-if="d.grounded" type="error" :closable="false" show-icon style="margin-top: 6px"
+            title="已停飞：未起飞作业单不得选用该机，已有待飞单需改派" />
 
           <div class="card-actions">
             <el-select v-model="statusMap[d.id]" placeholder="切换状态" size="small" style="width: 120px" @change="changeStatus(d)">
               <el-option v-for="s in allowedStatus(d.status)" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <el-button size="small" type="primary" :disabled="d.status !== 'IDLE'" @click="openDispatch(d)">派机</el-button>
+            <el-button size="small" @click="openDetail(d)">详情 / 处置</el-button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- 机身详情抽屉：台账 + 处置记录 + 飞行日志互跳 -->
+    <el-drawer v-model="detailVisible" size="600px" :title="detail ? '机身详情 · ' + detail.bodyNo : '机身详情'">
+      <div v-if="detail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="机身编号">{{ detail.bodyNo }}</el-descriptions-item>
+          <el-descriptions-item label="型号">{{ detail.model }} · {{ detail.droneTypeName }}</el-descriptions-item>
+          <el-descriptions-item label="当前状态">
+            <span :style="statusStyle(detail.status)" class="mini-tag">{{ detail.statusName }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="购入日期">{{ detail.purchaseDate || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="最大载荷">{{ detail.maxPayload }} L</el-descriptions-item>
+          <el-descriptions-item label="喷幅">{{ detail.sprayWidth }} m</el-descriptions-item>
+          <el-descriptions-item label="电池组数">{{ detail.batteryPacks }} 组</el-descriptions-item>
+          <el-descriptions-item label="累计架次">{{ detail.sortCount }}</el-descriptions-item>
+          <el-descriptions-item label="累计飞行小时">{{ detail.totalFlightHours }}</el-descriptions-item>
+          <el-descriptions-item label="累计作业亩数">{{ detail.totalAreaMu }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-alert v-if="detail.openHandlingCount > 0" type="error" :closable="false" show-icon style="margin: 12px 0"
+          :title="`该机还有 ${detail.openHandlingCount} 条未结束异常处置，不能切回在库；待飞作业单不得选用该机`" />
+        <el-alert v-else-if="detail.status === 'MAINT'" type="warning" :closable="false" show-icon
+                  style="margin: 12px 0" title="维修中：当前没有未结束处置，可直接切回在库" />
+
+        <div class="drawer-title">异常处置记录（{{ handlings.length }}）</div>
+        <el-table :data="handlings" border size="small">
+          <el-table-column prop="handlingNo" label="处置单号" width="120" />
+          <el-table-column label="架次" width="120">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="goLog(row)">{{ row.orderNo }} #{{ row.seqNo }}</el-button>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="92">
+            <template #default="{ row }">
+              <el-tag :type="handlingTag(row.status)" size="small" effect="dark">{{ row.statusName }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="supervisorName" label="主管" width="84">
+            <template #default="{ row }">{{ row.supervisorName || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="异常 / 结论" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.conclusion || row.handleRemark || row.abnormalDesc }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="80">
+            <template #default="{ row }">
+              <el-button size="small" link :type="row.status === 'RESOLVED' ? '' : 'primary'"
+                         @click="goHandling(row)">{{ row.status === 'RESOLVED' ? '查看' : '处置' }}</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="muted" style="font-size: 12px; margin-top: 6px">
+          完整飞行日志：
+          <el-button link type="primary" size="small" @click="goAllLogs">查看该机全部架次 →</el-button>
+        </div>
+      </div>
+    </el-drawer>
 
     <!-- 派机：给这台机配地块 + 飞手，直接生成一张待飞作业单 -->
     <el-dialog v-model="dispatchVisible" :title="dispatchDrone ? '派机 · ' + dispatchDrone.bodyNo : '派机'" width="560">
@@ -117,9 +184,12 @@
 
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { droneApi, pilotApi, plotApi } from '../api'
+import { droneApi, handlingApi, pilotApi, plotApi } from '../api'
 
+const route = useRoute()
+const router = useRouter()
 const plant = inject('plant')
 const drones = ref([])
 const filterStatus = ref('')
@@ -129,6 +199,9 @@ const dispatchVisible = ref(false)
 const dispatchDrone = ref(null)
 const plotOptions = ref([])
 const pilotOptions = ref([])
+const detailVisible = ref(false)
+const detail = ref(null)
+const handlings = ref([])
 
 const droneStatuses = [
   { value: 'IDLE', label: '在库' },
@@ -147,6 +220,7 @@ const dispatchForm = ref({ orderNo: '', plotId: null, pilotId: null, formula: ''
 
 const totalArea = computed(() => drones.value.reduce((sum, d) => sum + Number(d.totalAreaMu || 0), 0))
 const totalHours = computed(() => drones.value.reduce((sum, d) => sum + Number(d.totalFlightHours || 0), 0))
+const openHandlingTotal = computed(() => drones.value.reduce((sum, d) => sum + Number(d.openHandlingCount || 0), 0))
 
 function count(status) {
   return drones.value.filter((d) => d.status === status).length
@@ -155,6 +229,10 @@ function count(status) {
 function statusStyle(status) {
   const map = { IDLE: '#2e7d32', WORKING: '#7b1fa2', MAINT: '#ef6c00', DISABLED: '#c62828' }
   return { color: '#fff', background: map[status] || '#6b5f7d', borderColor: 'transparent' }
+}
+
+function handlingTag(status) {
+  return { PENDING: 'danger', OBSERVING: 'warning', GROUNDED: 'info', RESOLVED: 'success' }[status] || ''
 }
 
 function allowedStatus(current) {
@@ -168,14 +246,43 @@ async function load() {
     statusMap[d.id] = ''
   })
   plant.reloadOverview()
+  if (detail.value) {
+    const fresh = drones.value.find((d) => d.id === detail.value.id)
+    if (fresh) detail.value = fresh
+  }
 }
 
 async function changeStatus(drone) {
   const target = statusMap[drone.id]
   if (!target) return
-  await droneApi.setStatus(drone.id, target)
-  ElMessage.success(drone.bodyNo + ' 已切到' + droneStatuses.find((s) => s.value === target).label)
+  try {
+    await droneApi.setStatus(drone.id, target)
+    ElMessage.success(drone.bodyNo + ' 已切到' + droneStatuses.find((s) => s.value === target).label)
+  } catch (e) {
+    // 拦截器已弹后端具体原因（如「仍有未结束处置，不能切回在库」）
+  }
   await load()
+}
+
+async function openDetail(drone) {
+  detail.value = drone
+  handlings.value = await handlingApi.byDrone(drone.id)
+  detailVisible.value = true
+}
+
+function goHandling(row) {
+  detailVisible.value = false
+  router.push({ path: '/handlings', query: { flightLogId: row.flightLogId } })
+}
+
+function goLog(row) {
+  detailVisible.value = false
+  router.push({ path: '/logs', query: { jobOrderId: row.jobOrderId, flightLogId: row.flightLogId } })
+}
+
+function goAllLogs() {
+  detailVisible.value = false
+  router.push({ path: '/logs', query: { droneId: detail.value.id } })
 }
 
 async function openDispatch(drone) {
@@ -220,5 +327,19 @@ async function submitCreate() {
   await load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // 从飞行日志 / 处置台点机身进入：直接打开该机详情
+  if (route.query.droneId) {
+    const target = drones.value.find((d) => String(d.id) === String(route.query.droneId))
+    if (target) await openDetail(target)
+  }
+})
 </script>
+
+<style scoped>
+.unit-card.card-grounded {
+  border-color: #ef9a9a;
+  box-shadow: 0 0 0 2px rgba(198, 40, 40, 0.12);
+}
+</style>

@@ -141,6 +141,10 @@ body {
   background: rgba(198, 40, 40, 0.55);
 }
 
+.stat-chip.is-handling {
+  cursor: pointer;
+}
+
 /* ---------- 左侧竖向模块条 ---------- */
 .sidebar {
   position: sticky;

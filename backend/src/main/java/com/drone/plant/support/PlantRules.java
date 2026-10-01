@@ -130,6 +130,33 @@ public final class PlantRules {
     /** 单架次作业亩数上限 */
     public static final BigDecimal MAX_SORT_AREA = BigDecimal.valueOf(80.0);
 
+    // ---------------- 模块五（二）：异常架次停飞处置 ----------------
+    private static final Map<String, String> HANDLING_STATUS = Map.of(
+            "PENDING", "待处置",
+            "OBSERVING", "继续观察",
+            "GROUNDED", "已停飞",
+            "RESOLVED", "已解除");
+
+    /** 处置状态展示顺序（处置台状态筛选） */
+    public static final List<String> HANDLING_STATUS_ORDER =
+            List.of("PENDING", "OBSERVING", "GROUNDED", "RESOLVED");
+
+    /** 未结束的处置状态：机身存在其中任一状态的处置时，不得切回在库 */
+    public static final List<String> HANDLING_OPEN_STATUS = List.of("PENDING", "OBSERVING", "GROUNDED");
+
+    private static final Map<String, String> HANDLING_ACTION = Map.of(
+            "REGISTER", "登记",
+            "OBSERVE", "继续观察",
+            "GROUND", "停飞机身",
+            "RESOLVE", "解除");
+
+    /** 处置流转表：每一步能走到哪些状态由这里决定（待处置可直接停飞 / 观察 / 解除） */
+    private static final Map<String, List<String>> HANDLING_FLOW = Map.of(
+            "PENDING", List.of("OBSERVING", "GROUNDED", "RESOLVED"),
+            "OBSERVING", List.of("GROUNDED", "RESOLVED"),
+            "GROUNDED", List.of("RESOLVED"),
+            "RESOLVED", List.of());
+
     // ---------------- 模块六：配药复核 ----------------
     private static final Map<String, String> MIXING_STATUS = Map.of(
             "DRAFT", "草稿",
@@ -274,5 +301,28 @@ public final class PlantRules {
     /** 起飞到降落折算分钟数（服务端以表里的 duration_min 为准，这里仅做一致性核对） */
     public static long minutesBetween(java.time.LocalDateTime from, java.time.LocalDateTime to) {
         return Duration.between(from, to).toMinutes();
+    }
+
+    // ---------------- 异常处置取值 ----------------
+
+    public static boolean isValidHandlingStatus(String value) {
+        return value != null && HANDLING_STATUS.containsKey(value);
+    }
+
+    public static String handlingStatusName(String value) {
+        return HANDLING_STATUS.getOrDefault(value, value);
+    }
+
+    public static String handlingActionName(String value) {
+        return HANDLING_ACTION.getOrDefault(value, value);
+    }
+
+    public static boolean handlingFlowAllowed(String from, String to) {
+        return HANDLING_FLOW.getOrDefault(from, List.of()).contains(to);
+    }
+
+    /** 值班主管门槛与配药复核人一致：在队且执照为三级（高级）或教员 */
+    public static boolean supervisorLicenseAllowed(String licenseLevel) {
+        return REVIEWER_LICENSES.contains(licenseLevel);
     }
 }

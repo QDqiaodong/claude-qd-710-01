@@ -35,6 +35,10 @@
         <div class="stat-chip" :class="{ 'is-alert': (overview.abnormalRows || 0) > 0 }">
           <b>{{ overview.abnormalRows || 0 }}</b><span>异常架次</span>
         </div>
+        <div class="stat-chip is-handling" :class="{ 'is-alert': (overview.handlingPending || 0) > 0 }"
+             title="点击进入异常处置台" @click="go('/handlings')">
+          <b>{{ overview.handlingPending || 0 }}</b><span>待处置</span>
+        </div>
       </div>
     </header>
 

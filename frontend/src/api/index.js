@@ -88,8 +88,20 @@ export const mixingApi = {
 
 /** 模块五：飞行日志 */
 export const flightLogApi = {
-  list: (jobOrderId) => http.get('/flight-logs', { params: jobOrderId ? { jobOrderId } : {} }),
-  abnormal: (jobOrderId) => http.get('/flight-logs/abnormal', { params: jobOrderId ? { jobOrderId } : {} }),
-  summary: (jobOrderId) => http.get('/flight-logs/summary', { params: jobOrderId ? { jobOrderId } : {} }),
+  list: (params) => http.get('/flight-logs', { params: params || {} }),
+  abnormal: (params) => http.get('/flight-logs/abnormal', { params: params || {} }),
+  summary: (params) => http.get('/flight-logs/summary', { params: params || {} }),
   create: (data) => http.post('/flight-logs', data)
+}
+
+/** 模块五（二）：异常架次停飞处置 */
+export const handlingApi = {
+  list: (params) => http.get('/abnormal-handlings', { params: params || {} }),
+  byDrone: (droneId) => http.get(`/abnormal-handlings/by-drone/${droneId}`),
+  byFlightLog: (flightLogId) => http.get(`/abnormal-handlings/by-flight-log/${flightLogId}`),
+  detail: (id) => http.get(`/abnormal-handlings/${id}`),
+  supervisorOptions: () => http.get('/abnormal-handlings/supervisor-options'),
+  observe: (id, data) => http.post(`/abnormal-handlings/${id}/observe`, data),
+  ground: (id, data) => http.post(`/abnormal-handlings/${id}/ground`, data),
+  resolve: (id, data) => http.post(`/abnormal-handlings/${id}/resolve`, data)
 }

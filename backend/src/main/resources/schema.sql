@@ -1,6 +1,8 @@
 -- 植保无人机飞行队演示数据（ddl-auto: none，全部表结构与数据都靠这份脚本）
 SET NAMES utf8mb4;
 
+DROP TABLE IF EXISTS abnormal_handling_action;
+DROP TABLE IF EXISTS abnormal_handling;
 DROP TABLE IF EXISTS flight_log;
 DROP TABLE IF EXISTS mixing_review;
 DROP TABLE IF EXISTS mixing_bucket;
@@ -100,6 +102,49 @@ CREATE TABLE flight_log (
     KEY idx_job_order_id (job_order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='飞行日志';
 
+-- 模块五（二）：异常架次停飞处置单
+CREATE TABLE abnormal_handling (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    handling_no VARCHAR(24) NOT NULL COMMENT '处置单号',
+    flight_log_id BIGINT NOT NULL COMMENT '异常架次（飞行日志 id）',
+    job_order_id BIGINT NOT NULL COMMENT '所属作业单（架次快照，便于筛选）',
+    drone_id BIGINT NOT NULL COMMENT '涉事无人机（架次快照）',
+    status VARCHAR(16) NOT NULL COMMENT '状态 PENDING/OBSERVING/GROUNDED/RESOLVED',
+    registrar_id BIGINT NULL COMMENT '登记人（架次飞手快照）',
+    registrar_name VARCHAR(32) NULL COMMENT '登记人姓名快照',
+    supervisor_id BIGINT NULL COMMENT '值班主管（处置飞手）',
+    supervisor_name VARCHAR(32) NULL COMMENT '值班主管姓名快照',
+    abnormal_desc VARCHAR(255) NULL COMMENT '异常描述快照',
+    decision VARCHAR(16) NULL COMMENT '处置决定 OBSERVE/GROUND/RESOLVE',
+    handle_remark VARCHAR(255) NULL COMMENT '处置说明（继续观察 / 停飞时填写）',
+    conclusion VARCHAR(255) NULL COMMENT '处置结论（解除必填）',
+    observed_at DATETIME NULL COMMENT '继续观察时间',
+    grounded_at DATETIME NULL COMMENT '停飞时间',
+    resolved_at DATETIME NULL COMMENT '解除时间',
+    created_at DATETIME NULL,
+    updated_at DATETIME NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_handling_no (handling_no),
+    -- 一架次最多一张处置单：重复登记异常不会产生重复处置
+    UNIQUE KEY uk_handling_log (flight_log_id),
+    KEY idx_handling_status (status),
+    KEY idx_handling_drone (drone_id),
+    KEY idx_handling_order (job_order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异常架次停飞处置单';
+
+-- 异常处置留痕（登记 / 继续观察 / 停飞 / 解除全部留一条）
+CREATE TABLE abnormal_handling_action (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    handling_id BIGINT NOT NULL COMMENT '所属处置单',
+    action VARCHAR(16) NOT NULL COMMENT '动作 REGISTER/OBSERVE/GROUND/RESOLVE',
+    supervisor_id BIGINT NULL COMMENT '操作主管（登记时为架次飞手）',
+    supervisor_name VARCHAR(32) NULL COMMENT '操作人姓名快照',
+    remark VARCHAR(255) NULL COMMENT '说明（处置说明 / 处置结论）',
+    created_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_handling_action (handling_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异常处置留痕';
+
 -- 模块六：作业前配药批次（复核台）
 CREATE TABLE mixing_batch (
     id BIGINT NOT NULL AUTO_INCREMENT,
@@ -185,9 +230,9 @@ INSERT INTO drone (body_no, model, drone_type, max_payload, spray_width, total_f
 ('DP-02', '大疆 T60', 'MULTI', 50.00, 8.50, 231.70, 3584.00, 6, 'IDLE', '2025-05-08', '2026-09-16 08:30:00'),
 ('DP-03', '大疆 T50', 'MULTI', 40.00, 7.50, 198.20, 2915.50, 6, 'IDLE', '2024-11-20', '2026-09-14 10:10:00'),
 ('DP-04', '极飞 P60', 'SPRAY', 45.00, 8.00, 302.60, 4877.00, 10, 'IDLE', '2025-03-02', '2026-09-11 11:35:00'),
-('DP-05', '丰疆 XF-30', 'SINGLE', 30.00, 9.50, 145.30, 1926.00, 5, 'MAINT', '2024-08-16', '2026-09-09 16:40:00'),
+('DP-05', '丰疆 XF-30', 'SINGLE', 30.00, 9.50, 145.30, 1926.00, 5, 'MAINT', '2024-08-16', '2026-09-08 18:30:00'),
 ('DP-06', '汉和 CD-15', 'SINGLE', 32.00, 6.50, 88.90, 1104.50, 4, 'WORKING', '2025-06-11', '2026-09-23 07:55:00'),
-('DP-07', '大疆 T70', 'MULTI', 55.00, 9.00, 176.50, 2633.00, 8, 'WORKING', '2026-02-25', '2026-09-23 07:35:00'),
+('DP-07', '大疆 T70', 'MULTI', 55.00, 9.00, 176.50, 2633.00, 8, 'MAINT', '2026-02-25', '2026-09-23 09:40:00'),
 ('DP-08', '极飞 V50', 'SPRAY', 35.00, 6.80, 64.20, 812.00, 4, 'IDLE', '2025-09-30', '2026-09-20 15:30:00'),
 ('DP-09', '天途 M8A', 'MULTI', 30.00, 6.00, 52.80, 668.50, 4, 'IDLE', '2025-10-18', '2026-09-20 15:32:00'),
 ('DP-10', '韦加 X9', 'SPRAY', 42.00, 7.20, 37.40, 452.00, 6, 'IDLE', '2026-01-15', '2026-09-20 15:35:00'),
@@ -215,14 +260,16 @@ INSERT INTO job_order (order_no, plot_id, drone_id, pilot_id, formula, dose_per_
 ('JO-24091101', 4, 4, 4, '甲维盐 3% + 缩节胺', 1.30, 152.00, '2026-09-11', '晴', 'DONE', 152.00, '2026-09-11 07:42:00', '2026-09-11 07:42:00'),
 ('JO-24090801', 5, 5, 5, '代森锰锌 80% + 螺虫乙酯', 1.40, 63.50, '2026-09-08', '阴', 'DONE', 63.50, '2026-09-08 09:15:00', '2026-09-08 09:15:00'),
 ('JO-24090501', 1, 1, 1, '稻瘟灵 40% + 芸苔素内酯', 1.00, 128.50, '2026-09-05', '晴', 'DONE', 128.50, '2026-09-05 17:40:00', '2026-09-05 17:40:00'),
-('JO-24092301', 6, 6, 6, '菌核净 40% + 硼肥', 1.20, 88.00, '2026-09-23', '晴', 'WORKING', 52.00, NULL, '2026-09-23 06:50:00'),
-('JO-24092302', 7, 7, 7, '稻曲病防治：苯甲·丙环唑 + 磷酸二氢钾', 1.25, 210.00, '2026-09-23', '晴转多云', 'WORKING', 96.50, NULL, '2026-09-23 07:12:00'),
+('JO-24092301', 6, 6, 6, '菌核净 40% + 硼肥', 1.20, 88.00, '2026-09-23', '晴', 'WORKING', 77.00, NULL, '2026-09-23 06:50:00'),
+('JO-24092302', 7, 7, 7, '稻曲病防治：苯甲·丙环唑 + 磷酸二氢钾', 1.25, 210.00, '2026-09-23', '晴转多云', 'WORKING', 108.50, NULL, '2026-09-23 07:12:00'),
 ('JO-24092501', 8, 8, 9, '戊唑醇 43% + 叶面钾肥', 1.10, 135.50, '2026-09-25', '多云', 'PENDING', 0.00, NULL, '2026-09-20 15:20:00'),
 ('JO-24092601', 9, 9, 3, '氯虫苯甲酰胺 5% + 氨基寡糖素', 1.00, 79.00, '2026-09-26', '晴', 'PENDING', 0.00, NULL, '2026-09-20 15:25:00'),
 ('JO-24092701', 10, 10, 4, '稻飞虱防控：吡蚜酮 25% + 烯啶虫胺', 1.20, 186.00, '2026-09-27', '待定', 'PENDING', 0.00, NULL, '2026-09-20 15:28:00'),
-('JO-24092001', 12, 11, 2, '石硫合剂清园 + 矿物油', 1.60, 112.00, '2026-09-20', '小雨', 'CANCELED', 0.00, NULL, '2026-09-19 17:00:00');
+('JO-24092001', 12, 11, 2, '石硫合剂清园 + 矿物油', 1.60, 112.00, '2026-09-20', '小雨', 'CANCELED', 0.00, NULL, '2026-09-19 17:00:00'),
+-- DP-07 被停飞后还没来得及改派的待飞单（停飞提示改派演示用）
+('JO-24092401', 8, 7, 7, '戊唑醇 43% + 叶面钾肥（P-08 补喷）', 1.10, 60.00, '2026-09-24', '多云', 'PENDING', 0.00, NULL, '2026-09-23 12:10:00');
 
--- ---------------- 飞行日志（30 架次，分布在 8 张作业单上） ----------------
+-- ---------------- 飞行日志（32 架次，分布在 8 张作业单上） ----------------
 INSERT INTO flight_log (job_order_id, seq_no, takeoff_at, landing_at, duration_min, area_mu, chemical_l, wind_speed, temperature, abnormal, abnormal_desc, created_at) VALUES
 -- JO-24091801 地块 P-01（5 架次）
 (1, 1, '2026-09-18 06:12:00', '2026-09-18 06:24:00', 12, 26.00, 31.20, 2.1, 21.5, 0, NULL, '2026-09-18 06:25:00'),
@@ -261,7 +308,11 @@ INSERT INTO flight_log (job_order_id, seq_no, takeoff_at, landing_at, duration_m
 (8, 1, '2026-09-23 05:50:00', '2026-09-23 06:05:00', 15, 24.00, 30.00, 3.2, 20.4, 0, NULL, '2026-09-23 06:06:00'),
 (8, 2, '2026-09-23 06:12:00', '2026-09-23 06:27:00', 15, 24.50, 30.60, 3.5, 21.0, 0, NULL, '2026-09-23 06:28:00'),
 (8, 3, '2026-09-23 06:34:00', '2026-09-23 06:48:00', 14, 24.00, 30.00, 3.9, 21.6, 0, NULL, '2026-09-23 06:49:00'),
-(8, 4, '2026-09-23 06:55:00', '2026-09-23 07:09:00', 14, 24.00, 30.00, 4.3, 22.1, 1, '风速逼近 5m/s 阈值，暂停 4 分钟待风小后再复飞', '2026-09-23 07:10:00');
+(8, 4, '2026-09-23 06:55:00', '2026-09-23 07:09:00', 14, 24.00, 30.00, 4.3, 22.1, 1, '风速逼近 5m/s 阈值，暂停 4 分钟待风小后再复飞', '2026-09-23 07:10:00'),
+-- JO-24092301 第 3 架次（DP-06，异常已处置：继续观察）
+(7, 3, '2026-09-23 07:05:00', '2026-09-23 07:17:00', 12, 25.00, 30.00, 2.9, 22.8, 1, '降落时电池温度偏高 3℃，怀疑散热风道堵塞', '2026-09-23 07:18:00'),
+-- JO-24092302 第 5 架次（DP-07，异常已停飞：喷头压力异常，关联待飞单需改派）
+(8, 5, '2026-09-23 07:20:00', '2026-09-23 07:30:00', 10, 12.00, 15.00, 3.6, 22.6, 1, '复飞后 2 号喷头压力告警，喷量明显不均，立即返航', '2026-09-23 07:31:00');
 
 -- ---------------- 配药批次（3 张：已锁定 / 待复核 / 草稿） ----------------
 -- 批次1：JO-24092501 总药量 135.50×1.10=149.05L，DP-08 载荷 35L → 5 桶，已锁定可起飞
@@ -301,3 +352,55 @@ INSERT INTO mixing_review (id, batch_id, action, actor_pilot_id, actor_name, com
 (4, 2, 'CREATE', 3, '田鹏', '发起配药批次，系统生成默认分桶', '2026-09-22 16:40:00'),
 (5, 2, 'SUBMIT', 3, '田鹏', NULL, '2026-09-22 17:02:00'),
 (6, 3, 'CREATE', 6, '黄子谦', '发起配药批次，系统生成默认分桶', '2026-09-22 17:20:00');
+
+-- ---------------- 异常架次停飞处置（6 张：覆盖四种状态） ----------------
+-- 架次 id 对照：8=JO-24091601 第3架(DP-02) 11=JO-24091401 第2架(DP-03)
+-- 15=JO-24090801 第1架(DP-05) 31=JO-24092301 第3架(DP-06) 32=JO-24092302 第5架(DP-07)
+-- 30=JO-24092302 第4架(DP-07)
+INSERT INTO abnormal_handling (id, handling_no, flight_log_id, job_order_id, drone_id, status,
+    registrar_id, registrar_name, supervisor_id, supervisor_name, abnormal_desc, decision,
+    handle_remark, conclusion, observed_at, grounded_at, resolved_at, created_at, updated_at) VALUES
+-- 1. 历史小异常：观察后解除（DP-02 在库）
+(1, 'AH-24091601', 8, 2, 2, 'RESOLVED', 3, '田鹏', 1, '刘志远',
+ '第 6 分钟风速突增，短暂悬停，喷头流量下降约 12%', 'RESOLVE',
+ NULL, '检查喷头无堵塞，判定为阵风导致的瞬时流量波动，不影响后续作业，解除观察',
+ '2026-09-16 09:20:00', NULL, '2026-09-16 15:40:00', '2026-09-16 06:55:00', '2026-09-16 15:40:00'),
+-- 2. 丘陵返航点重设：观察后解除（DP-03 在库）
+(2, 'AH-24091401', 11, 3, 3, 'RESOLVED', 3, '田鹏', 2, '马晓峰',
+ '丘陵地形起伏，返航点重设一次，航线高度修正至 3.2m', 'RESOLVE',
+ NULL, '飞手操作符合丘陵作业规程，返航点与高度修正记录完整，复测无异常，解除观察',
+ '2026-09-14 10:30:00', NULL, '2026-09-15 08:00:00', '2026-09-14 07:40:00', '2026-09-15 08:00:00'),
+-- 3. 高压线避让：停飞检修后确认泵故障，DP-05 至今未解除（机身仍为维修中）
+(3, 'AH-24090801', 15, 5, 5, 'GROUNDED', 5, '周立波', 1, '刘志远',
+ '果树区边缘绕障，避让高压线并补飞一小段', 'GROUND',
+ '绕障后喷杆有刮碰痕迹，回库全面检查喷杆与药泵', NULL,
+ NULL, '2026-09-08 18:30:00', NULL, '2026-09-08 09:10:00', '2026-09-08 18:30:00'),
+-- 4. 当日 DP-06 电池温度偏高：值班主管决定继续观察（处置未结束，不能把机身切回空闲）
+(4, 'AH-24092303', 31, 7, 6, 'OBSERVING', 6, '黄子谦', 2, '马晓峰',
+ '降落时电池温度偏高 3℃，怀疑散热风道堵塞', 'OBSERVE',
+ '清理散热风道，当日剩余架次加密监测电池温度，收班后复检', NULL,
+ '2026-09-23 08:10:00', NULL, NULL, '2026-09-23 07:20:00', '2026-09-23 08:10:00'),
+-- 5. 当日 DP-07 喷头压力告警：停飞，关联待飞单 JO-24092401 待改派
+(5, 'AH-24092304', 32, 8, 7, 'GROUNDED', 7, '贾路遥', 1, '刘志远',
+ '复飞后 2 号喷头压力告警，喷量明显不均，立即返航', 'GROUND',
+ '喷头压力异常疑似泵体故障，立即停飞；未起飞作业单不得再用该机，待飞单改派其他机身', NULL,
+ NULL, '2026-09-23 09:40:00', NULL, '2026-09-23 07:35:00', '2026-09-23 09:40:00'),
+-- 6. 当日 DP-07 大风复飞架次：刚登记，等值班主管处理（待处置）
+(6, 'AH-24092305', 30, 8, 7, 'PENDING', 7, '贾路遥', NULL, NULL,
+ '风速逼近 5m/s 阈值，暂停 4 分钟待风小后再复飞', NULL,
+ NULL, NULL, NULL, NULL, NULL, '2026-09-23 07:12:00', '2026-09-23 07:12:00');
+
+INSERT INTO abnormal_handling_action (id, handling_id, action, supervisor_id, supervisor_name, remark, created_at) VALUES
+(1, 1, 'REGISTER', 3, '田鹏', NULL, '2026-09-16 06:55:00'),
+(2, 1, 'OBSERVE', 1, '刘志远', '阵风过程先观察，复检喷头与流量', '2026-09-16 09:20:00'),
+(3, 1, 'RESOLVE', 1, '刘志远', '检查喷头无堵塞，判定为阵风导致的瞬时流量波动，不影响后续作业，解除观察', '2026-09-16 15:40:00'),
+(4, 2, 'REGISTER', 3, '田鹏', NULL, '2026-09-14 07:40:00'),
+(5, 2, 'OBSERVE', 2, '马晓峰', '丘陵返航点重设符合规程，观察一个作业日', '2026-09-14 10:30:00'),
+(6, 2, 'RESOLVE', 2, '马晓峰', '飞手操作符合丘陵作业规程，返航点与高度修正记录完整，复测无异常，解除观察', '2026-09-15 08:00:00'),
+(7, 3, 'REGISTER', 5, '周立波', NULL, '2026-09-08 09:10:00'),
+(8, 3, 'GROUND', 1, '刘志远', '绕障后喷杆有刮碰痕迹，回库全面检查喷杆与药泵', '2026-09-08 18:30:00'),
+(9, 4, 'REGISTER', 6, '黄子谦', NULL, '2026-09-23 07:20:00'),
+(10, 4, 'OBSERVE', 2, '马晓峰', '清理散热风道，当日剩余架次加密监测电池温度，收班后复检', '2026-09-23 08:10:00'),
+(11, 5, 'REGISTER', 7, '贾路遥', NULL, '2026-09-23 07:35:00'),
+(12, 5, 'GROUND', 1, '刘志远', '喷头压力异常疑似泵体故障，立即停飞；未起飞作业单不得再用该机，待飞单改派其他机身', '2026-09-23 09:40:00'),
+(13, 6, 'REGISTER', 7, '贾路遥', NULL, '2026-09-23 07:12:00');
